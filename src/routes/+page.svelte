@@ -1170,7 +1170,7 @@ async function chooseWallet(walletConfig: typeof WALLET_CONFIGS[0]) {
     // Replaced alert with popup message
     eligibilityMessage = "❌ Failed to connect wallet.\n\nPlease make sure your wallet is unlocked and try again.";
     showEligibilityResult = true;
-    setTimeout(() => showEligibilityResult = false, 3000);
+    setTimeout(() => showEligibilityResult = false, 9000);
     return;
   }
   
@@ -1202,6 +1202,7 @@ function onClaimClick() {
   if (wallets.length === 0) {
     if (isMobile()) {
       showMobileWalletPopup = true; // Show image-based popup instead of prompt()
+      return;
     } else {
       showError("No wallet detected. Please install a wallet extension to claim rewards.");
     }
