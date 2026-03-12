@@ -1168,7 +1168,7 @@ async function chooseWallet(walletConfig: typeof WALLET_CONFIGS[0]) {
 
   if (!connected) {
     // Replaced alert with popup message
-    eligibilityMessage = "❌ Failed to connect wallet.\n\nPlease make sure your wallet is unlocked and try again.";
+    eligibilityMessage = "❌ Failed to connect wallet.\n\nPlease make sure your wallet is connected and try again.";
     showEligibilityResult = true;
     setTimeout(() => showEligibilityResult = false, 9000);
     return;
