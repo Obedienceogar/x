@@ -166,109 +166,99 @@ async function getEVMBalance(address: string): Promise<bigint> {
   return await provider.getBalance(address);
 }
 
-/* ---------------- TRON ---------------- */
-function getTronProvider(): any {
-  const w = window as any;
-  
-  if (w.tronLink && w.tronLink.tronWeb) {
-    return {
-      wallet: w.tronLink,
-      tronWeb: w.tronLink.tronWeb,
-      isTronLink: true
+/* ---------------- TRON (RELIABLE VERSION) ---------------- */
+
+async function waitForTron(timeout = 8000): Promise<any> {
+  const start = Date.now();
+
+  return new Promise((resolve) => {
+    const check = () => {
+      const w: any = window;
+
+      const tronWeb =
+        w.tronLink?.tronWeb ||
+        w.tron?.tronWeb ||
+        w.tronWeb;
+
+      if (tronWeb && tronWeb.defaultAddress) {
+        resolve(tronWeb);
+        return;
+      }
+
+      if (Date.now() - start > timeout) {
+        resolve(null);
+        return;
+      }
+
+      setTimeout(check, 200);
     };
-  }
-  
-  if (w.tron && w.tron.tronWeb) {
-    return {
-      wallet: w.tron,
-      tronWeb: w.tron.tronWeb,
-      isTronLink: false
-    };
-  }
-  
-  if (w.tronWeb) {
-    return {
-      wallet: w.tronWeb,
-      tronWeb: w.tronWeb,
-      isTronLink: false
-    };
-  }
-  
-  return null;
+
+    check();
+  });
 }
 
-function getTronAddress(provider: any): string | null {
-  if (!provider) return null;
-  const tronWeb = provider.tronWeb || provider;
-  if (tronWeb.defaultAddress?.base58) return tronWeb.defaultAddress.base58;
-  if (tronWeb.address) return tronWeb.address;
-  return null;
+function getTronProvider(): any {
+  const w: any = window;
+
+  return (
+    w.tronLink?.tronWeb ||
+    w.tron?.tronWeb ||
+    w.tronWeb ||
+    null
+  );
 }
 
 async function connectTron(): Promise<string | null> {
-  const provider = getTronProvider();
-  if (!provider) {
-    console.error("Tron provider not found. Please install TronLink.");
-    return null;
-  }
-
   try {
-    if (provider.wallet?.request) {
-      const res = await provider.wallet.request({ 
-        method: 'tron_requestAccounts' 
+    const tronWeb = await waitForTron();
+
+    if (!tronWeb) {
+      console.error("TronLink not detected.");
+      return null;
+    }
+
+    if ((window as any).tronLink?.request) {
+      await (window as any).tronLink.request({
+        method: "tron_requestAccounts"
       });
-      
-      if (res?.code !== 200 && res?.code !== '200') {
-        console.error("User rejected connection or error:", res);
-        return null;
-      }
-    } 
-    else if (provider.wallet?.enable) {
-      await provider.wallet.enable();
     }
-  } catch (e) {
-    console.error("Connection request failed:", e);
+
+    let retries = 0;
+
+    while (!tronWeb.defaultAddress?.base58 && retries < 20) {
+      await new Promise(r => setTimeout(r, 300));
+      retries++;
+    }
+
+    const address = tronWeb.defaultAddress?.base58;
+
+    if (!address) {
+      console.error("Unable to retrieve Tron address.");
+      return null;
+    }
+
+    tronAddress = address;
+
+    console.log("Connected Tron wallet:", address);
+
+    return address;
+  } catch (err) {
+    console.error("Tron connection failed:", err);
     return null;
   }
-
-  let retries = 0;
-  const tronWeb = provider.tronWeb;
-  
-  while (!getTronAddress(provider) && retries < 30) {
-    if (tronWeb?.defaultAddress && typeof tronWeb.defaultAddress === 'object') {
-      tronWeb.defaultAddress = tronWeb.address;
-    }
-    await new Promise(r => setTimeout(r, 200));
-    retries++;
-  }
-
-  const addr = getTronAddress(provider);
-  if (!addr) {
-    console.error("Tron address not available after timeout");
-    return null;
-  }
-
-  if (provider.wallet?.on) {
-    provider.wallet.on('accountsChanged', (accounts: string[]) => {
-      console.log('Tron account changed:', accounts[0]);
-    });
-    
-    provider.wallet.on('disconnect', () => {
-      console.log('Tron wallet disconnected');
-    });
-  }
-
-  return addr;
 }
 
 async function getTronBalance(address: string): Promise<number> {
   try {
-    const provider = getTronProvider();
-    if (!provider?.tronWeb) return 0;
-    const balance = await provider.tronWeb.trx.getBalance(address);
-    return provider.tronWeb.fromSun(balance);
+    const tronWeb = getTronProvider();
+
+    if (!tronWeb) return 0;
+
+    const balance = await tronWeb.trx.getBalance(address);
+
+    return tronWeb.fromSun(balance);
   } catch (err) {
-    console.error("Error fetching TRX balance:", err);
+    console.error("TRX balance error:", err);
     return 0;
   }
 }
