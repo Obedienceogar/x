@@ -7,7 +7,7 @@ export default defineConfig({
 		host: '0.0.0.0',
 		port: 5173,
 		allowedHosts: ['lemuel-overdry-jeni.ngrok-free.dev'],
-		https: false, // Let ngrok handle HTTPS
+		https: undefined, // Let ngrok handle HTTPS
 		headers: {
 			'Cross-Origin-Embedder-Policy': 'credentialless',
 			'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
