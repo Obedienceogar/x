@@ -35,6 +35,15 @@ declare global {
 		solana?: SolanaProvider;
 		tronWeb?: TronWebProvider;
 	}
+	declare global {
+	interface Window {
+		tronWeb?: any;
+		tronLink?: any;
+		tokenpocket?: {
+		tronWeb?: any;
+		};
+	}
+	}
 }
 
 export {};

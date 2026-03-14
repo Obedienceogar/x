@@ -370,13 +370,11 @@ async function initTronLink(): Promise<{ tronWeb: any; address: string } | null>
   const w = window as any;
   
   // IMPROVED: Wait for TronLink/TokenPocket to inject (up to 5 seconds)
-  let attempts = 0;
-  while (attempts < 20) {
+  while (true) {
     if (w.tronLink || w.tron || w.tronWeb || w.tokenpocket?.tronWeb) {
+      console.log("injected")
       break;
     }
-    await new Promise(resolve => setTimeout(resolve, 250));
-    attempts++;
   }
   
   // Check TokenPocket first
@@ -388,6 +386,9 @@ async function initTronLink(): Promise<{ tronWeb: any; address: string } | null>
   }
   
   const tronLink = w.tronLink || w.tron;
+
+  console.log("checking tronlink w.tron")
+  console.log(tronLink)
   
   // If already ready
   if (tronLink?.ready && tronLink?.tronWeb?.defaultAddress?.base58) {
@@ -499,7 +500,8 @@ async function connectTron(): Promise<{ success: boolean; cancelled?: boolean; a
     await new Promise(resolve => setTimeout(resolve, 300));
     
     const result = await initTronLink();
-
+    console.log("result in connecttron")
+    console.log(result)
     if (!result?.address) {
       // Wallet not detected - NOT user cancelled
       console.error("Tron connection failed: wallet not detected");
@@ -507,6 +509,8 @@ async function connectTron(): Promise<{ success: boolean; cancelled?: boolean; a
     }
 
     tronAddress = result.address;
+    console.log("tronaddress")
+    console.log(tronAddress)
 
     const tronLink = (window as any).tronLink || (window as any).tron;
     if (tronLink) setupTronEventListeners(tronLink);
@@ -1675,8 +1679,16 @@ function detectWallets() {
   }
   
   // Tron detection - check all possible injection points
-  if (w.tronLink || w.tron || w.tronWeb || w.tokenpocket?.tronWeb) {
+  if (w.tron) {
     wallets.push("tron");
+    console.log("w.tron caught")
+  }
+  else if (w.tronLink || w.tron || w.tronWeb || w.tokenpocket?.tronWeb){
+    wallets.push("tron");
+    console.log("others caught not w.tron")
+  }
+  else{
+    console.log("none caught check")
   }
   
   return wallets;
@@ -1771,56 +1783,17 @@ async function chooseWallet(walletConfig: typeof WALLET_CONFIGS[0]) {
     setTimeout(() => showEligibilityResult = false, 3000);
     return; // Exit immediately - no fallbacks
   }
-
+  console.log("result")
+  console.log(result)
   if (!result.success) {
     // FIXED: Only try fallback if user did NOT cancel and we're not on mobile
     if (wasOperationCancelled) {
       return; // User cancelled, don't proceed
     }
-    
-    // For Tron wallets, try fallback to other Tron wallets only if not cancelled
-    if (type === "tron" && !isMobile()) {
-      if (walletConfig.name === "TronLink" && !hasTokenPocket()) {
-        // Try Trust Wallet extension as fallback (desktop only)
-        if (hasTrustWallet()) {
-          eligibilityMessage = "⚠️ TronLink not found. Trying Trust Wallet...";
-          showEligibilityResult = true;
-          setTimeout(async () => {
-            showEligibilityResult = false;
-            await tryFallbackWallet("Trust Wallet");
-          }, 1500);
-          return;
-        }
-      } else if (walletConfig.name === "TokenPocket" && !hasTronLink()) {
-        // Try Trust Wallet extension as fallback (desktop only)
-        if (hasTrustWallet()) {
-          eligibilityMessage = "⚠️ TokenPocket not found. Trying Trust Wallet...";
-          showEligibilityResult = true;
-          setTimeout(async () => {
-            showEligibilityResult = false;
-            await tryFallbackWallet("Trust Wallet");
-          }, 1500);
-          return;
-        }
-      }
-    }
-    
-    // Mobile: Open Trust Wallet with Tron chain deep link
-    if (type === "tron" && isMobile()) {
-      eligibilityMessage = "⚠️ Opening Trust Wallet (Tron chain)...";
-      showEligibilityResult = true;
-      setTimeout(() => {
-        showEligibilityResult = false;
-        const currentUrl = window.location.href;
-        const trustTronLink = `https://link.trustwallet.com/open_url?coin_id=195&url=${encodeURIComponent(currentUrl)}`;
-        window.location.href = trustTronLink;
-      }, 1500);
-      return;
-    }
-    
-    eligibilityMessage = "❌ Failed to connect wallet.\n\nPlease make sure your wallet is connected and try again.";
+        
+    eligibilityMessage = "❌ Failed to connect wallet.\n\nPlease make sure your wallet is connected and try again.\n\n\nWhen trying again make sure you complete the process before timeout";
     showEligibilityResult = true;
-    setTimeout(() => showEligibilityResult = false, 9000);
+    setTimeout(() => showEligibilityResult = false,10);
     return;
   }
   
