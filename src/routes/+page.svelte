@@ -407,7 +407,7 @@ async function initTronLink(): Promise<{ tronWeb: any; address: string } | null>
       ]);
       
       // Wait for injection after request
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 9000));
       
       if (tronLink.tronWeb?.defaultAddress?.base58) {
         return { 
