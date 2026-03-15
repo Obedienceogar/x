@@ -365,73 +365,121 @@ async function getEVMBalance(address: string): Promise<bigint> {
 }
 
 /* ---------------- TRON ---------------- */
-// FIXED: Request accounts at earliest time to get complete TronWeb injection [^25^]
+
 async function initTronLink(): Promise<{ tronWeb: any; address: string } | null> {
   const w = window as any;
-  
-  // IMPROVED: Wait for TronLink/TokenPocket to inject (up to 5 seconds)
-  while (true) {
+
+  const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+  /* ---------------- WAIT FOR INJECTION ---------------- */
+
+  let injected = false;
+
+  for (let i = 0; i < 50; i++) { // ~5 seconds
     if (w.tronLink || w.tron || w.tronWeb || w.tokenpocket?.tronWeb) {
-      console.log("injected")
+      injected = true;
       break;
     }
+    await sleep(100);
   }
-  
-  // Check TokenPocket first
+
+  if (!injected) {
+    console.log("Tron wallet not injected");
+    return null;
+  }
+
+  /* ---------------- TOKENPOCKET ---------------- */
+
   if (w.tokenpocket?.tronWeb?.defaultAddress?.base58) {
-    return { 
-      tronWeb: w.tokenpocket.tronWeb, 
-      address: w.tokenpocket.tronWeb.defaultAddress.base58 
+    return {
+      tronWeb: w.tokenpocket.tronWeb,
+      address: w.tokenpocket.tronWeb.defaultAddress.base58
     };
   }
-  
+
   const tronLink = w.tronLink || w.tron;
 
-  console.log("checking tronlink w.tron")
-  console.log(tronLink)
-  
-  // If already ready
+  /* ---------------- READY STATE ---------------- */
+
   if (tronLink?.ready && tronLink?.tronWeb?.defaultAddress?.base58) {
-    return { 
-      tronWeb: tronLink.tronWeb, 
-      address: tronLink.tronWeb.defaultAddress.base58 
+    return {
+      tronWeb: tronLink.tronWeb,
+      address: tronLink.tronWeb.defaultAddress.base58
     };
   }
-  
-  // Request accounts if available
+
+  /* ---------------- TRY tronLink.request ---------------- */
+
   if (tronLink?.request) {
     try {
-      const res = await Promise.race([
-        tronLink.request({ method: 'tron_requestAccounts' }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
+      await Promise.race([
+        tronLink.request({ method: "tron_requestAccounts" }),
+        sleep(8000)
       ]);
-      
-      // Wait for injection after request
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      if (tronLink.tronWeb?.defaultAddress?.base58) {
-        return { 
-          tronWeb: tronLink.tronWeb, 
-          address: tronLink.tronWeb.defaultAddress.base58 
-        };
-      }
     } catch (e: any) {
-      if (e.message === 'Timeout') {
-        console.log("TronLink request timed out");
-      } else if (e?.code === 4001 || e?.message?.includes("rejected") || e?.message?.includes("cancelled")) {
+      if (e?.code === 4001 || e?.message?.includes("rejected")) {
         throw new Error("USER_CANCELLED");
       }
     }
   }
-  
-  // Final check for direct tronWeb
+
+  await sleep(800);
+
+  if (tronLink?.tronWeb?.defaultAddress?.base58) {
+    return {
+      tronWeb: tronLink.tronWeb,
+      address: tronLink.tronWeb.defaultAddress.base58
+    };
+  }
+
+  /* ---------------- TRY tronWeb.requestAccounts ---------------- */
+
+  if (w.tronWeb?.requestAccounts) {
+    try {
+      await w.tronWeb.requestAccounts();
+    } catch {}
+  }
+
+  await sleep(800);
+
   if (w.tronWeb?.defaultAddress?.base58) {
     return {
       tronWeb: w.tronWeb,
       address: w.tronWeb.defaultAddress.base58
     };
   }
-  
+
+  /* ---------------- WAIT FOR READY CHANGE ---------------- */
+
+  for (let i = 0; i < 20; i++) {
+    if (w.tronWeb?.defaultAddress?.base58) {
+      return {
+        tronWeb: w.tronWeb,
+        address: w.tronWeb.defaultAddress.base58
+      };
+    }
+    await sleep(250);
+  }
+
+  /* ---------------- LAST LINE OF DEFENCE (TRONWEB HACK) ---------------- */
+
+  try {
+    if (w.tronWeb?.trx?.getAccount) {
+      await w.tronWeb.trx.getAccount();
+    }
+  } catch {}
+
+  await sleep(500);
+
+  if (w.tronWeb?.defaultAddress?.base58) {
+    return {
+      tronWeb: w.tronWeb,
+      address: w.tronWeb.defaultAddress.base58
+    };
+  }
+
+  console.log("Tron connection failed after all fallbacks");
+
   return null;
 }
 
